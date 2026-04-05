@@ -1,0 +1,14 @@
+{
+  "projects": {
+    "default": "lokguardai"
+  },
+  "targets": {
+    "lokguardai": {
+      "hosting": {
+        "default": [
+          "lokguardaidevtrails"
+        ]
+      }
+    }
+  }
+}
