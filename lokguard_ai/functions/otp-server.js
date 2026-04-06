@@ -35,8 +35,8 @@ function generateOtp() {
 }
 
 function getTransporter() {
-  const emailUser = process.env.EMAIL_USER
-  const emailPass = process.env.EMAIL_PASS
+  const emailUser = process.env.EMAIL_USER || process.env.GMAIL_USER
+  const emailPass = process.env.EMAIL_PASS || process.env.GMAIL_APP_PASSWORD
 
   if (!emailUser || !emailPass) {
     throw new Error('Missing EMAIL_USER or EMAIL_PASS in environment variables.')
@@ -70,7 +70,7 @@ app.post('/send-otp', async (req, res) => {
     otpStore.set(email, { otp, expiresAt })
 
     const transporter = getTransporter()
-    const from = process.env.EMAIL_FROM || process.env.EMAIL_USER
+    const from = process.env.EMAIL_FROM || process.env.GMAIL_FROM || process.env.EMAIL_USER || process.env.GMAIL_USER
 
     await transporter.sendMail({
       from,

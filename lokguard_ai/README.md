@@ -79,6 +79,8 @@ Copy [functions/.env.example](functions/.env.example) to `functions/.env` and se
 - `GMAIL_APP_PASSWORD` (Gmail app password)
 - `GMAIL_FROM` (optional display sender)
 
+The functions code also accepts the older `EMAIL_USER`, `EMAIL_PASS`, and `EMAIL_FROM` names, but `GMAIL_*` is the preferred set for Firebase deployment.
+
 ### OTP behavior
 
 - Generates a 6-digit OTP

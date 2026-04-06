@@ -32,9 +32,9 @@ function hashOtp(otp) {
 }
 
 function getMailer() {
-  const user = process.env.GMAIL_USER
-  const pass = process.env.GMAIL_APP_PASSWORD
-  const from = process.env.GMAIL_FROM || user
+  const user = process.env.GMAIL_USER || process.env.EMAIL_USER
+  const pass = process.env.GMAIL_APP_PASSWORD || process.env.EMAIL_PASS
+  const from = process.env.GMAIL_FROM || process.env.EMAIL_FROM || user
 
   if (!user || !pass || !from) {
     return null
