@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react'
-import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore'
-import { auth, db } from '../firebase'
+import { fetchUserProfile, getCurrentUserId, upsertUserProfile } from '../lib/userStore'
 import '../App.css'
 
 const mockAlerts = [
@@ -35,50 +34,46 @@ export default function Alerts() {
   const [statusText, setStatusText] = useState('Showing latest alert stream.')
   const [isAddingAlert, setIsAddingAlert] = useState(false)
 
-  const getCurrentUid = () => {
+  const getCurrentUid = async () => {
+    const supabaseUid = await getCurrentUserId().catch(() => '')
+    if (supabaseUid) return supabaseUid
+
     try {
       const session = JSON.parse(localStorage.getItem('userSession') || '{}')
-      return auth?.currentUser?.uid || session.uid || ''
+      return session.uid || ''
     } catch {
-      return auth?.currentUser?.uid || ''
+      return ''
     }
   }
 
   useEffect(() => {
-    const uid = getCurrentUid()
-    if (!db || !uid) {
-      setStatusText('Using local mock alerts (no Firebase session).')
-      return
-    }
-
     const loadAlerts = async () => {
+      const uid = await getCurrentUid()
+      if (!uid) {
+        setStatusText('Using local mock alerts (no account session).')
+        return
+      }
+
       try {
-        const userRef = doc(db, 'users', uid)
-        const snap = await getDoc(userRef)
-        const data = snap.exists() ? snap.data() : {}
+        const data = await fetchUserProfile(uid)
         const cloudAlerts = Array.isArray(data?.alerts) ? data.alerts : []
 
         if (cloudAlerts.length > 0) {
           setAlerts(cloudAlerts)
-          setStatusText('Live alerts synced from Firebase.')
+          setStatusText('Live alerts synced from Supabase.')
           return
         }
 
         // Seed default mock alerts for first-time users.
-        await setDoc(
-          userRef,
-          {
-            alerts: mockAlerts,
-            updatedAt: serverTimestamp(),
-          },
-          { merge: true }
-        )
+        await upsertUserProfile(uid, {
+          alerts: mockAlerts,
+        })
 
         setAlerts(mockAlerts)
-        setStatusText('Default alerts were added to Firebase for your account.')
+        setStatusText('Default alerts were added to Supabase for your account.')
       } catch {
         setAlerts(mockAlerts)
-        setStatusText('Unable to fetch Firebase alerts. Showing mock data.')
+        setStatusText('Unable to fetch Supabase alerts. Showing mock data.')
       }
     }
 
@@ -121,22 +116,20 @@ export default function Alerts() {
     setAlerts(nextAlerts)
     setStatusText('New mock alert added locally.')
 
-    const uid = getCurrentUid()
-    if (!db || !uid) return
-
     setIsAddingAlert(true)
     try {
-      await setDoc(
-        doc(db, 'users', uid),
-        {
-          alerts: nextAlerts,
-          updatedAt: serverTimestamp(),
-        },
-        { merge: true }
-      )
-      setStatusText('New mock alert saved to Firebase.')
+      const uid = await getCurrentUid()
+      if (!uid) {
+        setStatusText('Added locally (no account session).')
+        return
+      }
+
+      await upsertUserProfile(uid, {
+        alerts: nextAlerts,
+      })
+      setStatusText('New mock alert saved to Supabase.')
     } catch {
-      setStatusText('Added locally, but Firebase save failed.')
+      setStatusText('Added locally, but Supabase save failed.')
     } finally {
       setIsAddingAlert(false)
     }

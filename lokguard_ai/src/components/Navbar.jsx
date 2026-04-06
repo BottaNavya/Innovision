@@ -1,6 +1,5 @@
 import { Link, NavLink, useNavigate } from 'react-router-dom'
-import { signOut } from 'firebase/auth'
-import { auth } from '../firebase'
+import { supabase } from '../supabaseClient'
 import { useTheme } from '../hooks/useTheme'
 
 const links = [
@@ -17,12 +16,10 @@ export default function Navbar({ isAuthenticated }) {
   const { isDark, toggleTheme } = useTheme()
 
   const handleLogout = async () => {
-    if (auth) {
-      try {
-        await signOut(auth)
-      } catch {
-        // Even if Firebase signOut fails, clear local session to prevent stale auth UI.
-      }
+    try {
+      await supabase.auth.signOut()
+    } catch {
+      // Even if remote signOut fails, clear local session to prevent stale auth UI.
     }
 
     localStorage.removeItem('isLoggedIn')
@@ -69,7 +66,7 @@ export default function Navbar({ isAuthenticated }) {
         </button>
       ) : (
         <Link to="/auth" className="nav-action">
-          Login / Register
+          Login
         </Link>
       )}
     </nav>

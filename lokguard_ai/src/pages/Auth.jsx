@@ -1,13 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import {
-  createUserWithEmailAndPassword,
-  signInWithEmailAndPassword,
-  updateProfile,
-} from 'firebase/auth'
-import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore'
 import GigIllustration from '../components/GigIllustration'
-import { auth, db } from '../firebase'
+import { fetchUserProfile, resolveLoginEmail } from '../lib/userStore'
+import { supabase } from '../supabaseClient'
 import '../App.css'
 
 const CAPTCHA_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
@@ -43,23 +38,24 @@ const resolveDisplayName = (explicitName, email, fallback = 'TinyBheema User') =
 }
 
 export default function Auth() {
-  const DEMO_USERS_KEY = 'lokguard_demo_users'
   const navigate = useNavigate()
+  const mountedRef = useRef(true)
+
   const [mode, setMode] = useState('login')
-  const [authStatus, setAuthStatus] = useState('')
-  const [authError, setAuthError] = useState('')
-  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [loginIdentifier, setLoginIdentifier] = useState('')
+  const [password, setPassword] = useState('')
   const [registerData, setRegisterData] = useState({
     name: '',
     email: '',
+    phone: '',
     location: '',
-    password: '',
+    confirmPassword: '',
   })
-  const [loginEmail, setLoginEmail] = useState('')
-  const [loginPassword, setLoginPassword] = useState('')
   const [captchaCode, setCaptchaCode] = useState(() => generateCaptchaCode())
   const [captchaInput, setCaptchaInput] = useState('')
-  const mountedRef = useRef(true)
+  const [authStatus, setAuthStatus] = useState('')
+  const [authError, setAuthError] = useState('')
+  const [isSubmitting, setIsSubmitting] = useState(false)
 
   useEffect(() => {
     mountedRef.current = true
@@ -73,36 +69,58 @@ export default function Auth() {
     setCaptchaInput('')
   }
 
-  const getFirebaseAuthErrorMessage = (error) => {
-    const code = error?.code || ''
-
-    if (code === 'auth/invalid-email') {
-      return 'Please enter a valid email address.'
-    }
-
-    if (code === 'auth/weak-password') {
-      return 'Password should be at least 6 characters.'
-    }
-
-    if (code === 'auth/email-already-in-use') {
-      return 'This account already exists. Please login instead.'
-    }
-
-    if (code === 'auth/invalid-credential' || code === 'auth/invalid-login-credentials' || code === 'auth/wrong-password' || code === 'auth/user-not-found') {
-      return 'Invalid email or password.'
-    }
-
-    return error?.message || 'Authentication failed. Please try again.'
+  const resetFormState = (nextMode) => {
+    setMode(nextMode)
+    setAuthStatus('')
+    setAuthError('')
+    setCaptchaInput('')
+    refreshCaptcha()
   }
 
-  const persistUserSession = ({ name, phone = '', email = '', location, gender = '', pincode = '', uid = 'demo-user' }) => {
+  const normalizeInput = (value) => value.trim()
+  const normalizeEmail = (value) => value.trim().toLowerCase()
+  const isEmail = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim())
+  const isPhone = (value) => /^[+\d][\d\s()-]{6,}$/.test(value.trim())
+
+  const persistUserSession = ({
+    name,
+    phone = '',
+    email = '',
+    location = 'Mumbai, India',
+    gender = '',
+    pincode = '',
+    occupation = '',
+    preferredClaimMethod = 'UPI',
+    verification = {},
+    documents = {},
+    uid,
+  }) => {
+    let existingUser = {}
+
+    try {
+      existingUser = JSON.parse(localStorage.getItem('user') || '{}')
+    } catch {
+      existingUser = {}
+    }
+
     const userData = {
+      ...existingUser,
       name,
       phone,
       email,
       location,
       gender,
       pincode,
+      occupation: occupation || existingUser.occupation || '',
+      preferredClaimMethod: preferredClaimMethod || existingUser.preferredClaimMethod || 'UPI',
+      verification: {
+        ...(existingUser.verification || {}),
+        ...verification,
+      },
+      documents: {
+        ...(existingUser.documents || {}),
+        ...documents,
+      },
     }
 
     localStorage.setItem('isLoggedIn', 'true')
@@ -115,184 +133,154 @@ export default function Auth() {
         verifiedAt: new Date().toISOString(),
       })
     )
+
     window.dispatchEvent(new Event('lokguard-auth-changed'))
   }
 
-  const safeReadStoredUser = () => {
-    try {
-      return JSON.parse(localStorage.getItem('user') || '{}')
-    } catch {
-      return {}
-    }
-  }
-
-  const isEmail = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim())
-
-  const getDemoUsers = () => {
-    const raw = localStorage.getItem(DEMO_USERS_KEY)
-    if (!raw) return {}
-
-    try {
-      const parsed = JSON.parse(raw)
-      return typeof parsed === 'object' && parsed ? parsed : {}
-    } catch {
-      return {}
-    }
-  }
-
-  const setDemoUsers = (users) => {
-    localStorage.setItem(DEMO_USERS_KEY, JSON.stringify(users))
-  }
-
-  const getStoredUid = () => {
-    try {
-      const session = JSON.parse(localStorage.getItem('userSession') || '{}')
-      return session.uid || ''
-    } catch {
-      return ''
-    }
-  }
-
-  const loadUserProfile = async (uid) => {
-    if (!db || !uid) return null
-
-    try {
-      const snap = await getDoc(doc(db, 'users', uid))
-      return snap.exists() ? snap.data() : null
-    } catch {
-      return null
-    }
-  }
-
-  const saveUserProfile = async (uid, profile) => {
-    if (!db || !uid) return false
-
-    try {
-      await setDoc(
-        doc(db, 'users', uid),
-        {
-          ...profile,
-          updatedAt: serverTimestamp(),
-          createdAt: serverTimestamp(),
-        },
-        { merge: true }
-      )
-
-      return true
-    } catch {
-      return false
-    }
-  }
-
-  const handleModeChange = (nextMode) => {
-    setMode(nextMode)
-    setAuthStatus('')
-    setAuthError('')
-    refreshCaptcha()
-  }
-
-  const handlePasswordLogin = async () => {
-    const email = loginEmail.trim().toLowerCase()
-    if (!email) {
-      setAuthError('Please enter your email address.')
-      return false
-    }
-
-    if (!loginPassword.trim()) {
-      setAuthError('Please enter your password.')
-      return false
-    }
-
-    if (!isEmail(email)) {
-      setAuthError('Please enter a valid email address.')
-      return false
-    }
-
-    if (auth) {
-      const userCredential = await signInWithEmailAndPassword(auth, email, loginPassword)
-      const firebaseUser = userCredential.user
-      const localUser = safeReadStoredUser()
-      const resolvedName = resolveDisplayName(
-        localUser.name || firebaseUser.displayName,
-        localUser.email || firebaseUser.email || email
-      )
-
-      // Persist a minimal session immediately so navigation is not blocked by Firestore reads.
-      persistUserSession({
-        name: resolvedName,
-        phone: localUser.phone || '',
-        email: localUser.email || email,
-        location: localUser.location || 'Mumbai, India',
-        gender: localUser.gender || '',
-        pincode: localUser.pincode || '',
-        uid: firebaseUser.uid,
-      })
-
-      // Refresh profile details in background after quick sign-in.
-      loadUserProfile(firebaseUser.uid).then((firestoreProfile) => {
-        if (!firestoreProfile) return
-
-        persistUserSession({
-          name: resolveDisplayName(
-            firestoreProfile.name || localUser.name || firebaseUser.displayName,
-            firestoreProfile.email || localUser.email || firebaseUser.email || email
-          ),
-          phone: firestoreProfile.phone || localUser.phone || '',
-          email: firestoreProfile.email || localUser.email || email,
-          location: firestoreProfile.location || localUser.location || 'Mumbai, India',
-          gender: firestoreProfile.gender || localUser.gender || '',
-          pincode: firestoreProfile.pincode || localUser.pincode || '',
-          uid: firebaseUser.uid,
-        })
-      })
-
-      return true
-    }
-
-    const users = getDemoUsers()
-    const account = users[email]
-    if (!account || account.password !== loginPassword) {
-      setAuthError('Invalid email or password.')
-      return false
-    }
+  const finalizeSessionFromProfile = async (user, fallbackProfile = {}) => {
+    const dbProfile = await fetchUserProfile(user.id).catch(() => null)
+    const profile = dbProfile || fallbackProfile
 
     persistUserSession({
-      name: account.name,
-      phone: account.phone || '',
-      email: account.email || email,
-      location: account.location,
-      uid: account.uid,
+      name: resolveDisplayName(profile?.name, profile?.email || user.email),
+      phone: profile?.phone || '',
+      email: profile?.email || user.email || '',
+      location: profile?.location || 'Mumbai, India',
+      gender: profile?.gender || '',
+      pincode: profile?.pincode || '',
+      occupation: profile?.occupation || '',
+      preferredClaimMethod: profile?.preferred_claim_method || profile?.preferredClaimMethod || 'UPI',
+      verification: profile?.verification || {},
+      documents: profile?.documents || {},
+      uid: user.id,
     })
-
-    return true
   }
 
-  const handleLogin = async () => {
-    setAuthStatus('')
-    setAuthError('')
-
+  const ensureCaptcha = () => {
     if (!captchaInput.trim()) {
       setAuthError('Please enter the CAPTCHA code.')
-      return
+      return false
     }
 
     if (captchaInput.trim().toUpperCase() !== captchaCode) {
       setAuthError('Captcha does not match. Please try again.')
       refreshCaptcha()
+      return false
+    }
+
+    return true
+  }
+
+  const normalizePhone = (value) => value.replace(/[^\d+]/g, '').trim()
+
+  const registerUser = async () => {
+    setAuthStatus('')
+    setAuthError('')
+
+    if (!ensureCaptcha()) return
+
+    const name = registerData.name.trim()
+    const email = normalizeEmail(registerData.email)
+    const phone = normalizePhone(registerData.phone)
+    const location = registerData.location.trim()
+    const registrationPassword = password.trim()
+    const confirmPassword = registerData.confirmPassword.trim()
+
+    if (!name) {
+      setAuthError('Enter your full name.')
+      return
+    }
+
+    if (!isEmail(email)) {
+      setAuthError('Enter a valid email address.')
+      return
+    }
+
+    if (!phone) {
+      setAuthError('Enter your phone number.')
+      return
+    }
+
+    if (!location) {
+      setAuthError('Enter your location.')
+      return
+    }
+
+    if (!registrationPassword) {
+      setAuthError('Enter a password.')
+      return
+    }
+
+    if (registrationPassword.length < 6) {
+      setAuthError('Password must be at least 6 characters.')
+      return
+    }
+
+    if (registrationPassword !== confirmPassword) {
+      setAuthError('Passwords do not match.')
       return
     }
 
     try {
       setIsSubmitting(true)
-      const success = await handlePasswordLogin()
 
-      if (!mountedRef.current || !success) return
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password: registrationPassword,
+        options: {
+          data: {
+            name,
+            phone,
+            location,
+          },
+        },
+      })
 
-      setAuthStatus('Login successful. Redirecting to dashboard...')
+      if (error) throw error
+
+      const user = data?.user
+      if (!user) {
+        throw new Error('Registration succeeded, but the user session was not created.')
+      }
+
+      await supabase
+        .from('users')
+        .upsert(
+          {
+            id: user.id,
+            name,
+            email,
+            phone,
+            location,
+            pincode: '',
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: 'id' }
+        )
+
+      const fallbackProfile = { name, email, phone, location, pincode: '' }
+
+      if (data.session) {
+        await finalizeSessionFromProfile(user, fallbackProfile)
+        setAuthStatus('Registration complete. Redirecting to dashboard...')
+        navigate('/dashboard')
+      } else {
+        setAuthStatus('Registration complete. Please verify your email, then sign in.')
+      }
+
+      setRegisterData({
+        name: '',
+        email: '',
+        phone: '',
+        location: '',
+        confirmPassword: '',
+      })
+      setPassword('')
       refreshCaptcha()
-      navigate('/dashboard')
+      setMode('login')
     } catch (error) {
-      setAuthError(getFirebaseAuthErrorMessage(error))
+      setAuthError(error?.message || 'Registration failed. Please try again.')
       refreshCaptcha()
     } finally {
       if (mountedRef.current) {
@@ -301,104 +289,67 @@ export default function Auth() {
     }
   }
 
-  const handleRegister = async () => {
+  const resolveLoginEmailAddress = async (identifier) => {
+    const normalizedIdentifier = normalizeInput(identifier)
+
+    if (isEmail(normalizedIdentifier)) {
+      return normalizeEmail(normalizedIdentifier)
+    }
+
+    if (!isPhone(normalizedIdentifier)) {
+      throw new Error('Enter a valid email address or phone number.')
+    }
+
+    const resolvedEmail = await resolveLoginEmail(normalizedIdentifier)
+    if (!resolvedEmail) {
+      throw new Error('No account was found for that phone number. Please contact support.')
+    }
+
+    return normalizeEmail(resolvedEmail)
+  }
+
+  const handleLogin = async () => {
     setAuthStatus('')
     setAuthError('')
 
-    if (!captchaInput.trim()) {
-      setAuthError('Please enter the CAPTCHA code.')
+    if (!ensureCaptcha()) return
+
+    const identifier = normalizeInput(loginIdentifier)
+    if (!identifier) {
+      setAuthError('Enter your email address or phone number.')
       return
     }
 
-    if (captchaInput.trim().toUpperCase() !== captchaCode) {
-      setAuthError('Captcha does not match. Please try again.')
-      refreshCaptcha()
-      return
-    }
-
-    const password = registerData.password.trim()
-    const normalizedEmail = registerData.email.trim().toLowerCase()
-    const resolvedName = resolveDisplayName(registerData.name, normalizedEmail)
-    const userData = {
-      name: resolvedName,
-      email: normalizedEmail,
-      location: registerData.location.trim(),
-    }
-
-    if (!userData.email || !userData.location || !password) {
-      setAuthError('Please fill all registration fields.')
-      return
-    }
-
-    if (password.length < 6) {
-      setAuthError('Password should be at least 6 characters.')
-      return
-    }
-
-    if (!isEmail(userData.email)) {
-      setAuthError('Please enter a valid email address.')
+    if (!password.trim()) {
+      setAuthError('Enter your password.')
       return
     }
 
     try {
       setIsSubmitting(true)
+      const email = await resolveLoginEmailAddress(identifier)
 
-      if (auth) {
-        const userCredential = await createUserWithEmailAndPassword(auth, userData.email, password)
-        const firebaseUser = userCredential.user
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email,
+        password: password.trim(),
+      })
 
-        const profile = {
-          name: userData.name,
-          email: userData.email,
-          location: userData.location,
-        }
+      if (error) throw error
 
-        if (firebaseUser) {
-          void updateProfile(firebaseUser, { displayName: userData.name }).catch(() => {})
-        }
-
-        persistUserSession({
-          ...profile,
-          gender: '',
-          pincode: '',
-          uid: firebaseUser.uid,
-        })
-
-        void saveUserProfile(firebaseUser.uid, profile)
-      } else {
-        const users = getDemoUsers()
-
-        if (users[userData.email]) {
-          setAuthError('This account already exists. Please login instead.')
-          return
-        }
-
-        const demoUser = {
-          uid: `demo-${Date.now()}`,
-          name: userData.name,
-          email: userData.email,
-          location: userData.location,
-          password,
-        }
-
-        users[userData.email] = demoUser
-        setDemoUsers(users)
-        persistUserSession({
-          name: demoUser.name,
-          phone: '',
-          email: demoUser.email,
-          location: demoUser.location,
-          gender: '',
-          pincode: '',
-          uid: demoUser.uid,
-        })
+      const user = data?.user
+      if (!user) {
+        throw new Error('Unable to verify your account. Please try again.')
       }
 
-      setAuthStatus('Account created successfully. Redirecting to dashboard...')
+      await finalizeSessionFromProfile(user, { email })
+
+      setAuthStatus('Login successful. Redirecting to dashboard...')
+      setPassword('')
+      setLoginIdentifier('')
       refreshCaptcha()
       navigate('/dashboard')
     } catch (error) {
-      setAuthError(getFirebaseAuthErrorMessage(error))
+      setAuthError(error?.message || 'Login failed. Please check your credentials and try again.')
       refreshCaptcha()
     } finally {
       if (mountedRef.current) {
@@ -414,8 +365,8 @@ export default function Auth() {
           <span className="eyebrow">Secure access</span>
           <h1>Designed like a premium product, built for gig workers.</h1>
           <p>
-            TinyBheema by LokGuard gives users one secure place to sign in, register,
-            and manage on-demand micro-insurance with a polished, mobile-first flow.
+            TinyBheema by LokGuard gives users one secure place to sign in and manage
+            on-demand micro-insurance with a polished, mobile-first flow.
           </p>
 
           <GigIllustration variant="auth" />
@@ -424,22 +375,14 @@ export default function Auth() {
         <div className="auth-panel auth-panel--form card">
           <div className="auth-topline">
             <span className="status-badge verified">Protected access</span>
-            <span className="auth-help">Quick sign-in</span>
+            <span className="auth-help">{mode === 'login' ? 'Password sign-in' : 'Create account'}</span>
           </div>
 
           <div className="auth-toggle">
-            <button
-              type="button"
-              className={mode === 'login' ? 'active' : ''}
-              onClick={() => handleModeChange('login')}
-            >
+            <button type="button" className={mode === 'login' ? 'active' : ''} onClick={() => resetFormState('login')}>
               Login
             </button>
-            <button
-              type="button"
-              className={mode === 'register' ? 'active' : ''}
-              onClick={() => handleModeChange('register')}
-            >
+            <button type="button" className={mode === 'register' ? 'active' : ''} onClick={() => resetFormState('register')}>
               Register
             </button>
           </div>
@@ -448,94 +391,96 @@ export default function Auth() {
             <h2>{mode === 'login' ? 'Welcome back' : 'Create your account'}</h2>
             <p>
               {mode === 'login'
-                ? 'Login with your email and password.'
-                : 'Register with your email and a password.'}
+                ? 'Enter your email or phone number and password to continue.'
+                : 'Create your account with name, email, phone, location, and password.'}
             </p>
           </div>
 
           <form className="auth-form auth-form--premium">
-            {mode === 'register' && (
+            {mode === 'register' ? (
+              <>
+                <label>
+                  Full name
+                  <input
+                    className="form-input"
+                    placeholder="Rajesh Kumar"
+                    autoComplete="name"
+                    value={registerData.name}
+                    onChange={(e) => setRegisterData({ ...registerData, name: e.target.value })}
+                  />
+                </label>
+
+                <label>
+                  Email
+                  <input
+                    className="form-input"
+                    placeholder="name@email.com"
+                    autoComplete="email"
+                    value={registerData.email}
+                    onChange={(e) => setRegisterData({ ...registerData, email: e.target.value })}
+                  />
+                </label>
+
+                <label>
+                  Phone number
+                  <input
+                    className="form-input"
+                    placeholder="9876543210"
+                    autoComplete="tel"
+                    value={registerData.phone}
+                    onChange={(e) => setRegisterData({ ...registerData, phone: e.target.value })}
+                  />
+                </label>
+
+                <label>
+                  Location
+                  <input
+                    className="form-input"
+                    placeholder="Mumbai, India"
+                    autoComplete="address-level2"
+                    value={registerData.location}
+                    onChange={(e) => setRegisterData({ ...registerData, location: e.target.value })}
+                  />
+                </label>
+              </>
+            ) : (
               <label>
-                Full name
+                Email or phone
                 <input
                   className="form-input"
-                  placeholder="Rajesh Kumar"
-                  autoComplete="name"
-                  value={registerData.name}
-                  onChange={(e) => setRegisterData({ ...registerData, name: e.target.value })}
+                  placeholder="name@email.com or 9876543210"
+                  autoComplete="username"
+                  value={loginIdentifier}
+                  onChange={(e) => setLoginIdentifier(e.target.value)}
                 />
               </label>
             )}
 
-            {mode === 'register' && (
-              <label>
-                Email
-                <input
-                  className="form-input"
-                  placeholder="name@email.com"
-                  autoComplete="email"
-                  value={registerData.email}
-                  onChange={(e) => setRegisterData({ ...registerData, email: e.target.value })}
-                />
-              </label>
-            )}
-
-            {mode === 'login' && (
-              <label>
-                Email
-                <input
-                  className="form-input"
-                  placeholder="name@email.com"
-                  autoComplete="email"
-                  value={loginEmail}
-                  onChange={(e) => setLoginEmail(e.target.value)}
-                />
-              </label>
-            )}
+            <label>
+              Password
+              <input
+                className="form-input"
+                placeholder={mode === 'login' ? 'Enter your password' : 'Create a password'}
+                type="password"
+                autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+            </label>
 
             {mode === 'register' && (
               <label>
-                Location
+                Confirm password
                 <input
                   className="form-input"
-                  placeholder="Mumbai, India"
-                  autoComplete="address-level2"
-                  value={registerData.location}
-                  onChange={(e) => setRegisterData({ ...registerData, location: e.target.value })}
-                />
-              </label>
-            )}
-
-            {mode === 'register' && (
-              <label>
-                Create password
-                <input
-                  className="form-input"
-                  placeholder="Set a secure password"
+                  placeholder="Re-enter your password"
                   type="password"
                   autoComplete="new-password"
-                  value={registerData.password}
-                  onChange={(e) => setRegisterData({ ...registerData, password: e.target.value })}
+                  value={registerData.confirmPassword}
+                  onChange={(e) => setRegisterData({ ...registerData, confirmPassword: e.target.value })}
                 />
               </label>
             )}
-
-            {mode === 'login' && (
-              <label>
-                Password
-                <input
-                  className="form-input"
-                  placeholder="Enter your password"
-                  type="password"
-                  autoComplete="current-password"
-                  value={loginPassword}
-                  onChange={(e) => setLoginPassword(e.target.value)}
-                />
-              </label>
-            )}
-
-            {authStatus && <p className="auth-status">{authStatus}</p>}
-            {authError && <p className="auth-status auth-status-error">{authError}</p>}
 
             <div className="captcha-block">
               <div className="captcha-header">
@@ -560,13 +505,16 @@ export default function Auth() {
               />
             </div>
 
+            {authStatus && <p className="auth-status">{authStatus}</p>}
+            {authError && <p className="auth-status auth-status-error">{authError}</p>}
+
             <button
               className="primary-button auth-submit"
               type="button"
-              onClick={mode === 'register' ? handleRegister : handleLogin}
+              onClick={mode === 'login' ? handleLogin : registerUser}
               disabled={isSubmitting}
             >
-              {isSubmitting ? 'Please wait...' : mode === 'login' ? 'Login' : 'Create account'}
+              {isSubmitting ? 'Please wait...' : mode === 'login' ? 'Sign in' : 'Create account'}
             </button>
           </form>
         </div>

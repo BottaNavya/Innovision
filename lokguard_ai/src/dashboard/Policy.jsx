@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore'
-import { auth, db } from '../firebase'
+import { fetchUserProfile, getCurrentUserId, upsertUserProfile } from '../lib/userStore'
 import '../App.css'
 
 function getRiskCategory(location) {
@@ -33,7 +32,10 @@ export default function Policy() {
     }
   }
 
-  const getCurrentUid = () => auth?.currentUser?.uid || getStoredUid()
+  const getCurrentUid = async () => {
+    const uid = await getCurrentUserId().catch(() => '')
+    return uid || getStoredUid()
+  }
 
   useEffect(() => {
     const storedUser = localStorage.getItem('user')
@@ -48,18 +50,15 @@ export default function Policy() {
   }, [])
 
   useEffect(() => {
-    const hydratePlanFromFirebase = async () => {
-      if (!db) return
-
-      const uid = getCurrentUid()
+    const hydratePlanFromSupabase = async () => {
+      const uid = await getCurrentUid()
       if (!uid) return
 
       try {
-        const snap = await getDoc(doc(db, 'users', uid))
-        if (!snap.exists()) return
+        const data = await fetchUserProfile(uid)
+        if (!data) return
 
-        const data = snap.data() || {}
-        const activePlan = data.activePlan || null
+        const activePlan = data.active_plan || data.activePlan || null
         if (activePlan?.planId) {
           setActivePlanId(activePlan.planId)
           setSelectedPlanId(activePlan.planId)
@@ -72,7 +71,7 @@ export default function Policy() {
       }
     }
 
-    hydratePlanFromFirebase()
+    hydratePlanFromSupabase()
   }, [])
 
   const risk = getRiskCategory(location)
@@ -133,20 +132,18 @@ export default function Policy() {
     localStorage.setItem('activePlanId', selectedPlan.id)
     localStorage.setItem('policyPlan', JSON.stringify(planPayload))
 
-    const uid = getCurrentUid()
-    if (db && uid) {
-      setDoc(
-        doc(db, 'users', uid),
-        {
+    getCurrentUid()
+      .then((uid) => {
+        if (!uid) return
+
+        return upsertUserProfile(uid, {
           location,
-          activePlan: planPayload,
-          updatedAt: serverTimestamp(),
-        },
-        { merge: true }
-      ).catch(() => {
+          active_plan: planPayload,
+        })
+      })
+      .catch(() => {
         // ignore write failures and keep local state
       })
-    }
   }
 
   return (

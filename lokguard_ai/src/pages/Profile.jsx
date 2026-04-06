@@ -1,9 +1,7 @@
 import { useEffect, useState } from 'react'
-import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore'
-import { httpsCallable } from 'firebase/functions'
-import { getDownloadURL, ref, uploadBytes } from 'firebase/storage'
 import Card from '../components/Card'
-import { auth, db, functions, storage } from '../firebase'
+import { fetchUserProfile, getCurrentUserId, upsertUserProfile, uploadUserDocument } from '../lib/userStore'
+import { supabase } from '../supabaseClient'
 import '../App.css'
 
 const extractNameFromEmail = (email = '') => {
@@ -27,8 +25,6 @@ const resolveDisplayName = (explicitName, email) => {
 
   return 'TinyBheema User'
 }
-
-const otpApiBaseUrl = (import.meta.env.VITE_OTP_API_BASE_URL || '').replace(/\/+$/, '')
 
 export default function Profile() {
   const PROFILE_DRAFT_KEY = 'lokguard_profile_draft'
@@ -78,7 +74,6 @@ export default function Profile() {
     smartDetection: true,
     manualReview: false,
   })
-  const OTP_REQUEST_TIMEOUT_MS = 15000
 
   useEffect(() => {
     try {
@@ -93,21 +88,8 @@ export default function Profile() {
       // Ignore malformed local settings.
     }
 
-    const getStoredUid = () => {
-      try {
-        const session = JSON.parse(localStorage.getItem('userSession') || '{}')
-        return session.uid || ''
-      } catch {
-        return ''
-      }
-    }
-
     const formatMemberSince = (value) => {
       if (!value) return 'Recently'
-
-      if (typeof value?.toDate === 'function') {
-        return value.toDate().toLocaleDateString('en-IN', { month: 'short', year: 'numeric' })
-      }
 
       const asDate = new Date(value)
       if (Number.isNaN(asDate.getTime())) return 'Recently'
@@ -143,7 +125,7 @@ export default function Profile() {
 
       setIdProofUrl(localUser?.documents?.idProofUrl || '')
       setAadhaarUrl(localUser?.documents?.aadhaarUrl || '')
-      setIsEmailVerified(Boolean(auth?.currentUser?.emailVerified || localUser?.verification?.emailVerified))
+      setIsEmailVerified(Boolean(localUser?.verification?.emailVerified))
 
       setEditData({
         name: localUser.name || '',
@@ -162,15 +144,17 @@ export default function Profile() {
         price: localPlan.price || 'Not set',
       })
 
-      const uid = auth?.currentUser?.uid || getStoredUid()
-      if (!db || !uid) return
+      const uid = await getCurrentUserId().catch(() => '')
+      if (!uid) return
 
       try {
-        const snap = await getDoc(doc(db, 'users', uid))
-        if (!snap.exists()) return
+        const data = await fetchUserProfile(uid)
+        if (!data) return
+        const activePlan = data.active_plan || data.activePlan || {}
 
-        const data = snap.data() || {}
-        const activePlan = data.activePlan || {}
+        const {
+          data: { user },
+        } = await supabase.auth.getUser()
 
         setProfile({
           name: resolveDisplayName(data.name || localUser.name, data.email || localUser.email),
@@ -180,12 +164,12 @@ export default function Profile() {
           pincode: data.pincode || localUser.pincode || '',
           gender: data.gender || localUser.gender || '',
           occupation: data.occupation || localUser.occupation || '',
-          preferredClaimMethod: data.preferredClaimMethod || localUser.preferredClaimMethod || 'UPI',
+          preferredClaimMethod: data.preferred_claim_method || data.preferredClaimMethod || localUser.preferredClaimMethod || 'UPI',
         })
 
         setIdProofUrl(data?.documents?.idProofUrl || localUser?.documents?.idProofUrl || '')
         setAadhaarUrl(data?.documents?.aadhaarUrl || localUser?.documents?.aadhaarUrl || '')
-        setIsEmailVerified(Boolean(auth?.currentUser?.emailVerified || data?.verification?.emailVerified || localUser?.verification?.emailVerified))
+        setIsEmailVerified(Boolean(user?.email_confirmed_at || data?.verification?.emailVerified || localUser?.verification?.emailVerified))
 
         setEditData({
           name: data.name || localUser.name || '',
@@ -195,10 +179,10 @@ export default function Profile() {
           pincode: data.pincode || localUser.pincode || '',
           gender: data.gender || localUser.gender || '',
           occupation: data.occupation || localUser.occupation || '',
-          preferredClaimMethod: data.preferredClaimMethod || localUser.preferredClaimMethod || 'UPI',
+          preferredClaimMethod: data.preferred_claim_method || data.preferredClaimMethod || localUser.preferredClaimMethod || 'UPI',
         })
 
-        setMemberSince(formatMemberSince(data.createdAt))
+        setMemberSince(formatMemberSince(data.created_at || data.createdAt))
 
         setPlanSummary({
           planName: activePlan.planName || localPlan.planName || 'No active plan',
@@ -237,67 +221,6 @@ export default function Profile() {
     setFormStatus('')
   }
 
-  const fetchWithTimeout = async (url, options = {}) => {
-    const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), OTP_REQUEST_TIMEOUT_MS)
-
-    try {
-      return await fetch(url, {
-        ...options,
-        signal: controller.signal,
-      })
-    } finally {
-      clearTimeout(timeoutId)
-    }
-  }
-
-  const callOtpCallable = async (endpoint, payload) => {
-    if (!functions) {
-      throw new Error('Firebase Functions is not configured for OTP.')
-    }
-
-    const callableName = endpoint === 'send-otp' ? 'sendEmailOtp' : 'verifyEmailOtp'
-    const callable = httpsCallable(functions, callableName)
-    const response = await callable(payload)
-    const result = response?.data || {}
-
-    if (result && result.success === false) {
-      throw new Error(result.message || 'OTP request failed.')
-    }
-
-    return result
-  }
-
-  const isFetchNetworkError = (error) => {
-    const message = String(error?.message || '')
-    return error?.name === 'TypeError' || /failed to fetch|networkerror|load failed/i.test(message)
-  }
-
-  const callOtpApi = async (endpoint, payload) => {
-    if (otpApiBaseUrl) {
-      try {
-        const response = await fetchWithTimeout(`${otpApiBaseUrl}/${endpoint}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        })
-
-        const result = await response.json().catch(() => ({}))
-        if (!response.ok || !result.success) {
-          throw new Error(result.message || 'OTP request failed.')
-        }
-
-        return result
-      } catch (error) {
-        if (!isFetchNetworkError(error) || !functions) {
-          throw error
-        }
-      }
-    }
-
-    return callOtpCallable(endpoint, payload)
-  }
-
   const persistEmailVerifiedState = async (email) => {
     setIsEmailVerified(true)
 
@@ -322,22 +245,17 @@ export default function Profile() {
       // Ignore local cache failures.
     }
 
-    const uid = auth?.currentUser?.uid || getStoredUid()
-    if (uid && db) {
+    const uid = await getCurrentUserId().catch(() => '') || getStoredUid()
+    if (uid) {
       try {
-        await setDoc(
-          doc(db, 'users', uid),
-          {
-            email: normalizedEmail,
-            verification: {
-              emailVerified: true,
-              emailVerificationStatus: 'verified',
-              emailVerifiedAt: serverTimestamp(),
-            },
-            updatedAt: serverTimestamp(),
+        await upsertUserProfile(uid, {
+          email: normalizedEmail,
+          verification: {
+            emailVerified: true,
+            emailVerificationStatus: 'verified',
+            emailVerifiedAt: new Date().toISOString(),
           },
-          { merge: true }
-        )
+        })
       } catch {
         // Keep local verification status even if remote update fails.
       }
@@ -359,14 +277,22 @@ export default function Profile() {
     setIsSendingEmailOtp(true)
 
     try {
-      await callOtpApi('send-otp', { email })
+      const { error } = await supabase.auth.signInWithOtp({
+        email,
+        options: {
+          shouldCreateUser: false,
+        },
+      })
+
+      if (error) {
+        throw error
+      }
 
       setEmailOtpSentTo(email)
       setEmailOtpCode('')
-      setFormStatus(`OTP sent to ${email}. Please check inbox and spam.`)
+      setFormStatus(`OTP sent to ${email}. Enter 7 to 8 digits.`)
     } catch (error) {
-      const isAbort = error?.name === 'AbortError'
-      setFormError(isAbort ? 'OTP request timed out. Please try again.' : (error?.message || 'Failed to send OTP.'))
+      setFormError(error?.message || 'Failed to send OTP.')
     } finally {
       setIsSendingEmailOtp(false)
     }
@@ -375,7 +301,7 @@ export default function Profile() {
   const isOtpReadyToVerify =
     !isEmailVerified &&
     emailOtpSentTo === (activeEditSection === 'identity' ? editData.email : profile.email).trim().toLowerCase() &&
-    /^\d{6}$/.test(emailOtpCode.trim())
+    /^\d{7,8}$/.test(emailOtpCode.trim())
 
   const checkVerificationStatus = async () => {
     setFormError('')
@@ -389,23 +315,30 @@ export default function Profile() {
       return
     }
 
-    if (!/^\d{6}$/.test(otp)) {
-      setFormError('Enter a valid 6-digit OTP.')
+    if (!/^\d{7,8}$/.test(otp)) {
+      setFormError('Enter a valid OTP with 7 to 8 digits.')
       return
     }
 
     setIsCheckingEmailOtp(true)
 
     try {
-      await callOtpApi('verify-otp', { email, otp })
+      const { error } = await supabase.auth.verifyOtp({
+        email,
+        token: otp,
+        type: 'email',
+      })
+
+      if (error) {
+        throw error
+      }
 
       await persistEmailVerifiedState(email)
       setEmailOtpCode('')
       setEmailOtpSentTo('')
       setFormStatus('Email verified successfully using OTP.')
     } catch (error) {
-      const isAbort = error?.name === 'AbortError'
-      setFormError(isAbort ? 'Verification timed out. Please try again.' : (error?.message || 'OTP verification failed.'))
+      setFormError(error?.message || 'OTP verification failed.')
     } finally {
       setIsCheckingEmailOtp(false)
     }
@@ -584,7 +517,7 @@ export default function Profile() {
       }
     }
 
-    const uid = auth?.currentUser?.uid || getStoredUid()
+    const uid = await getCurrentUserId().catch(() => '') || getStoredUid()
     if (!uid) {
       setFormError('Session not found. Please login again to save profile.')
       return
@@ -608,11 +541,11 @@ export default function Profile() {
         phoneVerified: false,
         phoneVerificationStatus: hasPhone ? 'not-enabled' : 'not-provided',
         phoneVerifiedAt: null,
-        emailVerified: Boolean(isEmailVerified || auth?.currentUser?.emailVerified),
-        emailVerificationStatus: isEmailVerified || auth?.currentUser?.emailVerified ? 'verified' : 'pending',
+        emailVerified: Boolean(isEmailVerified),
+        emailVerificationStatus: isEmailVerified ? 'verified' : 'pending',
         occupationVerificationStatus: (shouldSaveWork ? occupation : profile.occupation) ? 'pending' : 'not-required',
       },
-      updatedAt: serverTimestamp(),
+      updated_at: new Date().toISOString(),
     }
 
     setIsSaving(true)
@@ -626,8 +559,6 @@ export default function Profile() {
     }
 
     try {
-      const userRef = doc(db, 'users', uid)
-
       let finalIdProofUrl = idProofUrl
       let finalAadhaarUrl = aadhaarUrl
 
@@ -678,27 +609,23 @@ export default function Profile() {
       await new Promise((resolve) => setTimeout(resolve, 0))
       setIsSaving(false)
 
-      if (shouldSaveWork && occupation && storage) {
+      if (shouldSaveWork && occupation) {
         const uploadTasks = []
 
         if (idProofFile) {
-          const safeName = idProofFile.name.replace(/\s+/g, '_')
-          const idPath = `userDocuments/${uid}/idProof_${Date.now()}_${safeName}`
           uploadTasks.push(
-            uploadBytes(ref(storage, idPath), idProofFile).then(async (idSnapshot) => ({
+            uploadUserDocument(uid, 'user-documents', idProofFile, 'idProof').then((url) => ({
               type: 'idProof',
-              url: await getDownloadURL(idSnapshot.ref),
+              url,
             }))
           )
         }
 
         if (aadhaarFile) {
-          const safeName = aadhaarFile.name.replace(/\s+/g, '_')
-          const aadhaarPath = `userDocuments/${uid}/aadhaar_${Date.now()}_${safeName}`
           uploadTasks.push(
-            uploadBytes(ref(storage, aadhaarPath), aadhaarFile).then(async (aadhaarSnapshot) => ({
+            uploadUserDocument(uid, 'user-documents', aadhaarFile, 'aadhaar').then((url) => ({
               type: 'aadhaar',
-              url: await getDownloadURL(aadhaarSnapshot.ref),
+              url,
             }))
           )
         }
@@ -718,10 +645,13 @@ export default function Profile() {
       payload.documents = {
         idProofUrl: finalIdProofUrl || idProofUrl || '',
         aadhaarUrl: finalAadhaarUrl || aadhaarUrl || '',
-        submittedAt: shouldSaveWork && occupation ? serverTimestamp() : null,
+        submittedAt: shouldSaveWork && occupation ? new Date().toISOString() : null,
       }
 
-      await setDoc(userRef, payload, { merge: true })
+      payload.preferred_claim_method = payload.preferredClaimMethod
+      delete payload.preferredClaimMethod
+
+      await upsertUserProfile(uid, payload)
 
       localStorage.setItem(
         'user',
@@ -738,8 +668,8 @@ export default function Profile() {
           verification: {
             phoneVerified: false,
             phoneVerificationStatus: hasPhone ? 'not-enabled' : 'not-provided',
-            emailVerified: Boolean(isEmailVerified || auth?.currentUser?.emailVerified),
-            emailVerificationStatus: isEmailVerified || auth?.currentUser?.emailVerified ? 'verified' : 'pending',
+            emailVerified: Boolean(isEmailVerified),
+            emailVerificationStatus: isEmailVerified ? 'verified' : 'pending',
             occupationVerificationStatus: occupation ? 'pending' : 'not-required',
           },
           documents: {
@@ -761,6 +691,7 @@ export default function Profile() {
       window.dispatchEvent(new Event('lokguard-auth-changed'))
     } catch (error) {
       const code = error?.code || ''
+      const message = String(error?.message || '').toLowerCase()
 
       if (code === 'permission-denied' || code === 'storage/unauthorized' || code === 'storage/unauthenticated') {
         setFormError('Unable to save your changes. Please check your permissions and try again.')
@@ -777,8 +708,8 @@ export default function Profile() {
         const verification = {
           phoneVerified: false,
           phoneVerificationStatus: hasPhone ? 'not-enabled' : 'not-provided',
-          emailVerified: Boolean(isEmailVerified || auth?.currentUser?.emailVerified),
-          emailVerificationStatus: isEmailVerified || auth?.currentUser?.emailVerified ? 'verified' : 'pending',
+          emailVerified: Boolean(isEmailVerified),
+          emailVerificationStatus: isEmailVerified ? 'verified' : 'pending',
           occupationVerificationStatus: occupation ? 'pending' : 'not-required',
         }
 
@@ -797,8 +728,12 @@ export default function Profile() {
 
         setActiveEditSection(null)
         setFormStatus('Profile saved. You can continue editing or viewing other sections.')
-      } else if (code === 'storage/object-not-found' || code === 'storage/bucket-not-found') {
-        setFormError('Unable to save your documents. Please try again.')
+      } else if (
+        code === 'storage/object-not-found' ||
+        code === 'storage/bucket-not-found' ||
+        (message.includes('bucket') && message.includes('not found'))
+      ) {
+        setFormError("Storage bucket 'user-documents' is missing. Create it in Supabase Storage and try again.")
       } else {
         setFormError(error?.message || 'Unable to save profile. Please check your connection and try again.')
       }
@@ -830,7 +765,7 @@ export default function Profile() {
       </section>
 
       <div className="page-grid three-up">
-        <Card title="Identity" icon="👤" badge="Verified">
+        <Card title="Identity" icon="👤" badge={isEmailVerified ? 'Verified' : 'Pending'}>
           <div className="profile-actions">
             {activeEditSection === 'identity' ? (
               <>
@@ -935,12 +870,14 @@ export default function Profile() {
                     <input
                       className="form-input"
                       value={emailOtpCode}
-                      onChange={(e) => setEmailOtpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                      placeholder="Enter 6-digit OTP"
+                      onChange={(e) => setEmailOtpCode(e.target.value.replace(/\D/g, '').slice(0, 8))}
+                      placeholder="Enter 7 to 8 digit OTP"
                       inputMode="numeric"
+                      maxLength={8}
+                      autoComplete="one-time-code"
                       style={{ marginTop: '0.75rem' }}
                     />
-                    <small className="profile-file-note">Didn't receive OTP? Check spam or ensure the OTP API server is running.</small>
+                    <small className="profile-file-note">If you receive a link instead of a code, enable email OTP in Supabase Auth templates and include the token variable.</small>
                   </>
                 )}
               </label>
@@ -951,11 +888,69 @@ export default function Profile() {
               <div><span>Gender</span><strong>{profile.gender || 'Not provided'}</strong></div>
               <div><span>Phone</span><strong>{profile.phone || 'Not provided'}</strong></div>
               <div><span>Email</span><strong>{profile.email || 'Not provided'}</strong></div>
-              {!isEmailVerified && <div><span>Verification</span><strong>Email not verified</strong></div>}
+              <div><span>Verification</span><strong>{isEmailVerified ? 'Email verified' : 'Email not verified'}</strong></div>
             </div>
           )}
         </Card>
 
+        <Card title="Account summary" icon="🛡️" badge={planSummary.planName}>
+          <div className="profile-actions">
+            {activeEditSection === 'summary' ? (
+              <>
+                <button
+                  type="button"
+                  className="profile-action-button"
+                  onClick={() => handleSaveProfile('summary')}
+                  disabled={isSaving}
+                >
+                  {isSaving ? 'Saving...' : 'Save summary'}
+                </button>
+                <button
+                  type="button"
+                  className="profile-action-button profile-action-button--secondary"
+                  onClick={cancelSectionEdit}
+                  disabled={isSaving}
+                >
+                  Cancel
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                className="profile-action-button profile-action-button--secondary"
+                onClick={() => startSectionEdit('summary')}
+              >
+                Edit summary
+              </button>
+            )}
+          </div>
+          {activeEditSection === 'summary' ? (
+            <div className="profile-edit-grid">
+              <label>
+                Preferred claim method
+                <select
+                  className="form-input"
+                  value={editData.preferredClaimMethod}
+                  onChange={(e) => handleEditChange('preferredClaimMethod', e.target.value)}
+                >
+                  <option value="UPI">UPI</option>
+                  <option value="Bank Transfer">Bank Transfer</option>
+                  <option value="Wallet">Wallet</option>
+                </select>
+              </label>
+            </div>
+          ) : (
+            <div className="profile-stack">
+              <div><span>Member since</span><strong>{memberSince}</strong></div>
+              <div><span>Coverage</span><strong>{planSummary.coverageAmount}</strong></div>
+              <div><span>Weekly premium</span><strong>{planSummary.price}</strong></div>
+              <div><span>Claim method</span><strong>{profile.preferredClaimMethod || 'UPI'}</strong></div>
+            </div>
+          )}
+        </Card>
+      </div>
+
+      <section className="work-zone-panel">
         <Card title="Current work zone" icon="📍" badge="Active">
           <div className="profile-actions">
             {activeEditSection === 'work' ? (
@@ -1037,6 +1032,11 @@ export default function Profile() {
                       {idProofFile ? `Selected: ${idProofFile.name}` : 'ID proof uploaded'}
                     </small>
                   )}
+                  {idProofUrl && (
+                    <a className="profile-file-link" href={idProofUrl} target="_blank" rel="noreferrer">
+                      View uploaded ID proof
+                    </a>
+                  )}
                 </label>
               )}
               {editData.occupation.trim() && (
@@ -1053,6 +1053,11 @@ export default function Profile() {
                       {aadhaarFile ? `Selected: ${aadhaarFile.name}` : 'Aadhaar uploaded'}
                     </small>
                   )}
+                  {aadhaarUrl && (
+                    <a className="profile-file-link" href={aadhaarUrl} target="_blank" rel="noreferrer">
+                      View uploaded Aadhaar
+                    </a>
+                  )}
                 </label>
               )}
             </div>
@@ -1060,68 +1065,33 @@ export default function Profile() {
             <div className="profile-stack">
               <div><span>City</span><strong>{profile.location}</strong></div>
               <div><span>Pincode</span><strong>{profile.pincode || 'Not provided'}</strong></div>
+              <div><span>Occupation</span><strong>{profile.occupation || 'Not provided'}</strong></div>
               <div><span>Risk level</span><strong>High disruption risk</strong></div>
               <div><span>Status</span><strong>{isEmailVerified ? 'Email verified' : 'Email verification pending'}</strong></div>
+              <div>
+                <span>ID proof</span>
+                {idProofUrl ? (
+                  <a className="profile-file-link" href={idProofUrl} target="_blank" rel="noreferrer">
+                    View uploaded ID proof
+                  </a>
+                ) : (
+                  <strong>Not uploaded</strong>
+                )}
+              </div>
+              <div>
+                <span>Aadhaar</span>
+                {aadhaarUrl ? (
+                  <a className="profile-file-link" href={aadhaarUrl} target="_blank" rel="noreferrer">
+                    View uploaded Aadhaar
+                  </a>
+                ) : (
+                  <strong>Not uploaded</strong>
+                )}
+              </div>
             </div>
           )}
         </Card>
-
-        <Card title="Account summary" icon="🛡️" badge={planSummary.planName}>
-          <div className="profile-actions">
-            {activeEditSection === 'summary' ? (
-              <>
-                <button
-                  type="button"
-                  className="profile-action-button"
-                  onClick={() => handleSaveProfile('summary')}
-                  disabled={isSaving}
-                >
-                  {isSaving ? 'Saving...' : 'Save summary'}
-                </button>
-                <button
-                  type="button"
-                  className="profile-action-button profile-action-button--secondary"
-                  onClick={cancelSectionEdit}
-                  disabled={isSaving}
-                >
-                  Cancel
-                </button>
-              </>
-            ) : (
-              <button
-                type="button"
-                className="profile-action-button profile-action-button--secondary"
-                onClick={() => startSectionEdit('summary')}
-              >
-                Edit summary
-              </button>
-            )}
-          </div>
-          {activeEditSection === 'summary' ? (
-            <div className="profile-edit-grid">
-              <label>
-                Preferred claim method
-                <select
-                  className="form-input"
-                  value={editData.preferredClaimMethod}
-                  onChange={(e) => handleEditChange('preferredClaimMethod', e.target.value)}
-                >
-                  <option value="UPI">UPI</option>
-                  <option value="Bank Transfer">Bank Transfer</option>
-                  <option value="Wallet">Wallet</option>
-                </select>
-              </label>
-            </div>
-          ) : (
-            <div className="profile-stack">
-              <div><span>Member since</span><strong>{memberSince}</strong></div>
-              <div><span>Coverage</span><strong>{planSummary.coverageAmount}</strong></div>
-              <div><span>Weekly premium</span><strong>{planSummary.price}</strong></div>
-              <div><span>Claim method</span><strong>{profile.preferredClaimMethod || 'UPI'}</strong></div>
-            </div>
-          )}
-        </Card>
-      </div>
+      </section>
 
       <section className="card auto-claim-settings-card">
         <span className="eyebrow">Auto claim settings</span>

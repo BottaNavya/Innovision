@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
-import { onAuthStateChanged } from 'firebase/auth'
-import { auth } from './firebase'
+import { supabase } from './supabaseClient'
 import Navbar from './components/Navbar'
 import Home from './pages/Home'
 import Auth from './pages/Auth'
@@ -30,10 +29,11 @@ export default function App() {
   const [isCheckingAuth, setIsCheckingAuth] = useState(true)
 
   useEffect(() => {
-    const syncAuthState = () => {
+    const syncAuthState = async () => {
       const hasLocalSession = getHasLocalSession()
-      const hasFirebaseSession = Boolean(auth?.currentUser)
-      setIsAuthenticated(hasFirebaseSession || hasLocalSession)
+      const { data } = await supabase.auth.getSession()
+      const hasSupabaseSession = Boolean(data?.session)
+      setIsAuthenticated(hasSupabaseSession || hasLocalSession)
       setIsCheckingAuth(false)
     }
 
@@ -44,19 +44,13 @@ export default function App() {
     window.addEventListener('storage', handleAuthStateChange)
     window.addEventListener('lokguard-auth-changed', handleAuthStateChange)
 
-    if (!auth) {
-      syncAuthState()
-      return () => {
-        window.removeEventListener('storage', handleAuthStateChange)
-        window.removeEventListener('lokguard-auth-changed', handleAuthStateChange)
-      }
-    }
-
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
       const hasLocalSession = getHasLocalSession()
-      const hasSession = Boolean(user) || hasLocalSession
+      const hasSession = Boolean(session) || hasLocalSession
 
-      if (user) {
+      if (session) {
         localStorage.setItem('isLoggedIn', 'true')
       }
 
@@ -64,8 +58,10 @@ export default function App() {
       setIsCheckingAuth(false)
     })
 
+    syncAuthState()
+
     return () => {
-      unsubscribe()
+      subscription.unsubscribe()
       window.removeEventListener('storage', handleAuthStateChange)
       window.removeEventListener('lokguard-auth-changed', handleAuthStateChange)
     }

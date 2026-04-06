@@ -2910,6 +2910,10 @@ html.dark .page-header {
   gap: 12px;
 }
 
+.work-zone-panel {
+  margin-top: 18px;
+}
+
 .profile-actions {
   display: flex;
   gap: 10px;
@@ -2998,6 +3002,34 @@ html.dark .page-header {
   color: #64748b;
   font-size: 0.78rem;
   font-weight: 500;
+}
+
+.profile-file-link {
+  display: inline-flex;
+  margin-top: 8px;
+  color: #3b82f6;
+  font-size: 0.84rem;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.profile-file-link:hover {
+  text-decoration: underline;
+}
+
+.profile-proof-stack {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border-radius: 14px;
+  background: rgba(59, 130, 246, 0.08);
+  border: 1px solid rgba(59, 130, 246, 0.16);
+}
+
+.profile-proof-stack span {
+  color: #334155;
+  font-size: 0.82rem;
+  font-weight: 700;
 }
 
 .profile-save-footer {

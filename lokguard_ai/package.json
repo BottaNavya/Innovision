@@ -1,16 +1,19 @@
 {
   "name": "lokguard_ai",
+  "description": "TinyBheema mini project powered by React, Vite, and Supabase",
   "private": true,
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "start": "vite",
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "check": "npm run build"
   },
   "dependencies": {
-    "firebase": "^12.11.0",
+    "@supabase/supabase-js": "^2.101.1",
     "react": "^19.2.4",
     "react-chatbotify": "^2.5.0",
     "react-dom": "^19.2.4",
