@@ -27,7 +27,7 @@ const resolveDisplayName = (explicitName, email) => {
   return 'TinyBheema User'
 }
 
-const otpApiBaseUrl = (import.meta.env.VITE_OTP_API_BASE_URL || 'http://localhost:5000').replace(/\/+$/, '')
+const otpApiBaseUrl = (import.meta.env.VITE_OTP_API_BASE_URL || '').replace(/\/+$/, '')
 
 export default function Profile() {
   const PROFILE_DRAFT_KEY = 'lokguard_profile_draft'
@@ -305,6 +305,11 @@ export default function Profile() {
 
     if (!isEmailValid) {
       setFormError('Enter a valid email before sending OTP.')
+      return
+    }
+
+    if (!otpApiBaseUrl) {
+      setFormError('Set VITE_OTP_API_BASE_URL to your deployed OTP API before sending verification codes.')
       return
     }
 

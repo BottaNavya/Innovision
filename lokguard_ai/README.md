@@ -40,6 +40,7 @@ Required keys:
 - VITE_FIREBASE_STORAGE_BUCKET
 - VITE_FIREBASE_MESSAGING_SENDER_ID
 - VITE_FIREBASE_APP_ID
+- VITE_OTP_API_BASE_URL
 
 ## 4. Enable Phone Auth in Firebase
 
@@ -58,6 +59,13 @@ npm run dev
 ```
 
 The app reads Firebase config from [src/firebase.js](src/firebase.js). If config is missing, it falls back to demo auth mode in [src/pages/Auth.jsx](src/pages/Auth.jsx).
+
+### Vercel deployment notes
+
+- Set all `VITE_FIREBASE_*` variables in the Vercel project settings.
+- Set `VITE_OTP_API_BASE_URL` to your deployed Firebase Functions URL, for example `https://<region>-<project-id>.cloudfunctions.net/emailOtpApi`.
+- Add your Vercel domain to Firebase Authentication authorized domains.
+- Deploy the Firebase backend separately; Vercel only serves the frontend in this repo.
 
 ## 7. Email OTP API (Node.js + Firebase Functions)
 
