@@ -1,0 +1,12 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "installCommand": "cd lokguard_ai && npm install",
+  "buildCommand": "cd lokguard_ai && npm run build",
+  "outputDirectory": "lokguard_ai/dist",
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}
