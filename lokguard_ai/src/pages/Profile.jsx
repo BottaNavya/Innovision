@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
 import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore'
+import { httpsCallable } from 'firebase/functions'
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage'
 import Card from '../components/Card'
-import { auth, db, storage } from '../firebase'
+import { auth, db, functions, storage } from '../firebase'
 import '../App.css'
 
 const extractNameFromEmail = (email = '') => {
@@ -250,6 +251,53 @@ export default function Profile() {
     }
   }
 
+  const callOtpCallable = async (endpoint, payload) => {
+    if (!functions) {
+      throw new Error('Firebase Functions is not configured for OTP.')
+    }
+
+    const callableName = endpoint === 'send-otp' ? 'sendEmailOtp' : 'verifyEmailOtp'
+    const callable = httpsCallable(functions, callableName)
+    const response = await callable(payload)
+    const result = response?.data || {}
+
+    if (result && result.success === false) {
+      throw new Error(result.message || 'OTP request failed.')
+    }
+
+    return result
+  }
+
+  const isFetchNetworkError = (error) => {
+    const message = String(error?.message || '')
+    return error?.name === 'TypeError' || /failed to fetch|networkerror|load failed/i.test(message)
+  }
+
+  const callOtpApi = async (endpoint, payload) => {
+    if (otpApiBaseUrl) {
+      try {
+        const response = await fetchWithTimeout(`${otpApiBaseUrl}/${endpoint}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        })
+
+        const result = await response.json().catch(() => ({}))
+        if (!response.ok || !result.success) {
+          throw new Error(result.message || 'OTP request failed.')
+        }
+
+        return result
+      } catch (error) {
+        if (!isFetchNetworkError(error) || !functions) {
+          throw error
+        }
+      }
+    }
+
+    return callOtpCallable(endpoint, payload)
+  }
+
   const persistEmailVerifiedState = async (email) => {
     setIsEmailVerified(true)
 
@@ -308,30 +356,17 @@ export default function Profile() {
       return
     }
 
-    if (!otpApiBaseUrl) {
-      setFormError('Set VITE_OTP_API_BASE_URL to your deployed OTP API before sending verification codes.')
-      return
-    }
-
     setIsSendingEmailOtp(true)
 
     try {
-      const response = await fetchWithTimeout(`${otpApiBaseUrl}/send-otp`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email }),
-      })
-
-      const result = await response.json().catch(() => ({}))
-      if (!response.ok || !result.success) {
-        throw new Error(result.message || 'Failed to send OTP.')
-      }
+      await callOtpApi('send-otp', { email })
 
       setEmailOtpSentTo(email)
       setEmailOtpCode('')
       setFormStatus(`OTP sent to ${email}. Please check inbox and spam.`)
     } catch (error) {
-      setFormError(error?.message || 'Failed to send OTP. Ensure OTP API is running.')
+      const isAbort = error?.name === 'AbortError'
+      setFormError(isAbort ? 'OTP request timed out. Please try again.' : (error?.message || 'Failed to send OTP.'))
     } finally {
       setIsSendingEmailOtp(false)
     }
@@ -362,16 +397,7 @@ export default function Profile() {
     setIsCheckingEmailOtp(true)
 
     try {
-      const response = await fetchWithTimeout(`${otpApiBaseUrl}/verify-otp`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, otp }),
-      })
-
-      const result = await response.json().catch(() => ({}))
-      if (!response.ok || !result.success) {
-        throw new Error(result.message || 'OTP verification failed.')
-      }
+      await callOtpApi('verify-otp', { email, otp })
 
       await persistEmailVerifiedState(email)
       setEmailOtpCode('')

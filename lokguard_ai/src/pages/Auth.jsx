@@ -354,7 +354,7 @@ export default function Auth() {
         }
 
         if (firebaseUser) {
-          await updateProfile(firebaseUser, { displayName: userData.name })
+          void updateProfile(firebaseUser, { displayName: userData.name }).catch(() => {})
         }
 
         persistUserSession({
@@ -364,7 +364,7 @@ export default function Auth() {
           uid: firebaseUser.uid,
         })
 
-        await saveUserProfile(firebaseUser.uid, profile)
+        void saveUserProfile(firebaseUser.uid, profile)
       } else {
         const users = getDemoUsers()
 
