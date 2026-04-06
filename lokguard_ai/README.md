@@ -1,6 +1,8 @@
-# LokGuard AI
+# LokGuard - TinyBheema
 
-LokGuard AI is a React + Vite app with Firebase Phone Authentication support.
+LokGuard's TinyBheema provides affordable, on-demand micro-insurance tailored for gig workers, ensuring financial protection anytime, anywhere.
+
+This is a React + Vite app with Firebase authentication support.
 
 ## 1. Install dependencies
 
@@ -56,3 +58,86 @@ npm run dev
 ```
 
 The app reads Firebase config from [src/firebase.js](src/firebase.js). If config is missing, it falls back to demo auth mode in [src/pages/Auth.jsx](src/pages/Auth.jsx).
+
+## 7. Email OTP API (Node.js + Firebase Functions)
+
+Backend API is available in [functions/index.js](functions/index.js) using Firebase Functions.
+
+### Configure Gmail SMTP
+
+Copy [functions/.env.example](functions/.env.example) to `functions/.env` and set values:
+
+- `GMAIL_USER`
+- `GMAIL_APP_PASSWORD` (Gmail app password)
+- `GMAIL_FROM` (optional display sender)
+
+### OTP behavior
+
+- Generates a 6-digit OTP
+- Stores hashed OTP in Firestore collection `emailOtps`
+- OTP expires in 5 minutes
+- Basic attempt limiting is included
+
+### API endpoints
+
+Function: `emailOtpApi`
+
+1. `POST /send-otp`
+	 Body:
+
+	 ```json
+	 {
+		 "email": "user@example.com"
+	 }
+	 ```
+
+2. `POST /verify-otp`
+	 Body:
+
+	 ```json
+	 {
+		 "email": "user@example.com",
+		 "otp": "123456"
+	 }
+	 ```
+
+When deployed on Firebase Functions, call routes like:
+
+- `https://<region>-<project-id>.cloudfunctions.net/emailOtpApi/send-otp`
+- `https://<region>-<project-id>.cloudfunctions.net/emailOtpApi/verify-otp`
+
+## 8. Express Email OTP API (Hackathon mode)
+
+A simple standalone Node.js API is available in [functions/otp-server.js](functions/otp-server.js).
+
+### Setup
+
+1. Copy [functions/.env.example](functions/.env.example) to `functions/.env`.
+2. Set `EMAIL_USER` and `EMAIL_PASS` (Gmail app password).
+3. Start server:
+
+```bash
+cd functions
+npm run otp-api
+```
+
+### Endpoints
+
+1. `POST /send-otp`
+
+```json
+{
+	"email": "user@example.com"
+}
+```
+
+2. `POST /verify-otp`
+
+```json
+{
+	"email": "user@example.com",
+	"otp": "123456"
+}
+```
+
+OTP is a 6-digit code, stored in memory with 5-minute expiry.

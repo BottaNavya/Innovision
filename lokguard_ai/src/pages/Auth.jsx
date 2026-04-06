@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import {
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
+  updateProfile,
 } from 'firebase/auth'
 import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore'
 import GigIllustration from '../components/GigIllustration'
@@ -17,6 +18,28 @@ const generateCaptchaCode = (length = 5) => {
     next += CAPTCHA_CHARS[Math.floor(Math.random() * CAPTCHA_CHARS.length)]
   }
   return next
+}
+
+const extractNameFromEmail = (email = '') => {
+  const localPart = email.split('@')[0] || ''
+  const cleaned = localPart.replace(/[._-]+/g, ' ').replace(/\s+/g, ' ').trim()
+  if (!cleaned) return ''
+
+  return cleaned
+    .split(' ')
+    .filter(Boolean)
+    .map((part) => part[0].toUpperCase() + part.slice(1))
+    .join(' ')
+}
+
+const resolveDisplayName = (explicitName, email, fallback = 'TinyBheema User') => {
+  const fromName = (explicitName || '').trim()
+  if (fromName) return fromName
+
+  const fromEmail = extractNameFromEmail(email)
+  if (fromEmail) return fromEmail
+
+  return fallback
 }
 
 export default function Auth() {
@@ -72,12 +95,14 @@ export default function Auth() {
     return error?.message || 'Authentication failed. Please try again.'
   }
 
-  const persistUserSession = ({ name, phone = '', email = '', location, uid = 'demo-user' }) => {
+  const persistUserSession = ({ name, phone = '', email = '', location, gender = '', pincode = '', uid = 'demo-user' }) => {
     const userData = {
       name,
       phone,
       email,
       location,
+      gender,
+      pincode,
     }
 
     localStorage.setItem('isLoggedIn', 'true')
@@ -91,6 +116,14 @@ export default function Auth() {
       })
     )
     window.dispatchEvent(new Event('lokguard-auth-changed'))
+  }
+
+  const safeReadStoredUser = () => {
+    try {
+      return JSON.parse(localStorage.getItem('user') || '{}')
+    } catch {
+      return {}
+    }
   }
 
   const isEmail = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim())
@@ -132,20 +165,23 @@ export default function Auth() {
   }
 
   const saveUserProfile = async (uid, profile) => {
-    if (!db || !uid) return
+    if (!db || !uid) return false
 
-    const snap = await getDoc(doc(db, 'users', uid))
-    const isNew = !snap.exists()
+    try {
+      await setDoc(
+        doc(db, 'users', uid),
+        {
+          ...profile,
+          updatedAt: serverTimestamp(),
+          createdAt: serverTimestamp(),
+        },
+        { merge: true }
+      )
 
-    await setDoc(
-      doc(db, 'users', uid),
-      {
-        ...profile,
-        updatedAt: serverTimestamp(),
-        ...(isNew ? { createdAt: serverTimestamp() } : {}),
-      },
-      { merge: true }
-    )
+      return true
+    } catch {
+      return false
+    }
   }
 
   const handleModeChange = (nextMode) => {
@@ -175,15 +211,39 @@ export default function Auth() {
     if (auth) {
       const userCredential = await signInWithEmailAndPassword(auth, email, loginPassword)
       const firebaseUser = userCredential.user
-      const firestoreProfile = (await loadUserProfile(firebaseUser.uid)) || {}
-      const localUser = JSON.parse(localStorage.getItem('user') || '{}')
+      const localUser = safeReadStoredUser()
+      const resolvedName = resolveDisplayName(
+        localUser.name || firebaseUser.displayName,
+        localUser.email || firebaseUser.email || email
+      )
 
+      // Persist a minimal session immediately so navigation is not blocked by Firestore reads.
       persistUserSession({
-        name: firestoreProfile.name || localUser.name || 'LokGuard User',
-        phone: firestoreProfile.phone || localUser.phone || '',
-        email: firestoreProfile.email || localUser.email || email,
-        location: firestoreProfile.location || localUser.location || 'Mumbai, India',
+        name: resolvedName,
+        phone: localUser.phone || '',
+        email: localUser.email || email,
+        location: localUser.location || 'Mumbai, India',
+        gender: localUser.gender || '',
+        pincode: localUser.pincode || '',
         uid: firebaseUser.uid,
+      })
+
+      // Refresh profile details in background after quick sign-in.
+      loadUserProfile(firebaseUser.uid).then((firestoreProfile) => {
+        if (!firestoreProfile) return
+
+        persistUserSession({
+          name: resolveDisplayName(
+            firestoreProfile.name || localUser.name || firebaseUser.displayName,
+            firestoreProfile.email || localUser.email || firebaseUser.email || email
+          ),
+          phone: firestoreProfile.phone || localUser.phone || '',
+          email: firestoreProfile.email || localUser.email || email,
+          location: firestoreProfile.location || localUser.location || 'Mumbai, India',
+          gender: firestoreProfile.gender || localUser.gender || '',
+          pincode: firestoreProfile.pincode || localUser.pincode || '',
+          uid: firebaseUser.uid,
+        })
       })
 
       return true
@@ -230,7 +290,7 @@ export default function Auth() {
 
       setAuthStatus('Login successful. Redirecting to dashboard...')
       refreshCaptcha()
-      setTimeout(() => navigate('/dashboard'), 600)
+      navigate('/dashboard')
     } catch (error) {
       setAuthError(getFirebaseAuthErrorMessage(error))
       refreshCaptcha()
@@ -257,13 +317,15 @@ export default function Auth() {
     }
 
     const password = registerData.password.trim()
+    const normalizedEmail = registerData.email.trim().toLowerCase()
+    const resolvedName = resolveDisplayName(registerData.name, normalizedEmail)
     const userData = {
-      name: registerData.name.trim(),
-      email: registerData.email.trim().toLowerCase(),
+      name: resolvedName,
+      email: normalizedEmail,
       location: registerData.location.trim(),
     }
 
-    if (!userData.name || !userData.email || !userData.location || !password) {
+    if (!userData.email || !userData.location || !password) {
       setAuthError('Please fill all registration fields.')
       return
     }
@@ -291,11 +353,18 @@ export default function Auth() {
           location: userData.location,
         }
 
-        await saveUserProfile(firebaseUser.uid, profile)
+        if (firebaseUser) {
+          await updateProfile(firebaseUser, { displayName: userData.name })
+        }
+
         persistUserSession({
           ...profile,
+          gender: '',
+          pincode: '',
           uid: firebaseUser.uid,
         })
+
+        await saveUserProfile(firebaseUser.uid, profile)
       } else {
         const users = getDemoUsers()
 
@@ -319,15 +388,15 @@ export default function Auth() {
           phone: '',
           email: demoUser.email,
           location: demoUser.location,
+          gender: '',
+          pincode: '',
           uid: demoUser.uid,
         })
       }
 
       setAuthStatus('Account created successfully. Redirecting to dashboard...')
       refreshCaptcha()
-      setTimeout(() => {
-        navigate('/dashboard')
-      }, 800)
+      navigate('/dashboard')
     } catch (error) {
       setAuthError(getFirebaseAuthErrorMessage(error))
       refreshCaptcha()
@@ -345,8 +414,8 @@ export default function Auth() {
           <span className="eyebrow">Secure access</span>
           <h1>Designed like a premium product, built for gig workers.</h1>
           <p>
-            LokGuard AI gives users one secure place to sign in, register, and manage
-            income protection with a polished, mobile-first flow.
+            TinyBheema by LokGuard gives users one secure place to sign in, register,
+            and manage on-demand micro-insurance with a polished, mobile-first flow.
           </p>
 
           <GigIllustration variant="auth" />

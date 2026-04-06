@@ -37,8 +37,8 @@ export default function Navbar({ isAuthenticated }) {
       <Link to="/home" className="nav-brand">
         <span className="nav-brand-mark">🛡️</span>
         <span>
-          <strong>LokGuard AI</strong>
-          <small>Income protection for gig workers</small>
+          <strong>TinyBheema</strong>
+          <small>by LokGuard</small>
         </span>
       </Link>
 

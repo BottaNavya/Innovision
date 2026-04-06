@@ -1,20 +1,45 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore'
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage'
-import { sendEmailVerification } from 'firebase/auth'
 import Card from '../components/Card'
 import { auth, db, storage } from '../firebase'
 import '../App.css'
+
+const extractNameFromEmail = (email = '') => {
+  const localPart = email.split('@')[0] || ''
+  const cleaned = localPart.replace(/[._-]+/g, ' ').replace(/\s+/g, ' ').trim()
+  if (!cleaned) return ''
+
+  return cleaned
+    .split(' ')
+    .filter(Boolean)
+    .map((part) => part[0].toUpperCase() + part.slice(1))
+    .join(' ')
+}
+
+const resolveDisplayName = (explicitName, email) => {
+  const fromName = (explicitName || '').trim()
+  if (fromName) return fromName
+
+  const fromEmail = extractNameFromEmail(email)
+  if (fromEmail) return fromEmail
+
+  return 'TinyBheema User'
+}
+
+const otpApiBaseUrl = (import.meta.env.VITE_OTP_API_BASE_URL || 'http://localhost:5000').replace(/\/+$/, '')
 
 export default function Profile() {
   const PROFILE_DRAFT_KEY = 'lokguard_profile_draft'
   const PROFILE_PENDING_SYNC_KEY = 'lokguard_profile_pending_sync'
 
   const [profile, setProfile] = useState({
-    name: 'LokGuard User',
+    name: 'TinyBheema User',
     phone: '',
     email: '',
     location: 'Mumbai, India',
+    pincode: '',
+    gender: '',
     occupation: '',
     preferredClaimMethod: '',
   })
@@ -23,13 +48,18 @@ export default function Profile() {
     phone: '',
     email: '',
     location: '',
+    pincode: '',
+    gender: '',
     occupation: '',
     preferredClaimMethod: 'UPI',
   })
   const [activeEditSection, setActiveEditSection] = useState(null)
   const [isSaving, setIsSaving] = useState(false)
-  const [isVerifyingEmail, setIsVerifyingEmail] = useState(false)
+  const [isSendingEmailOtp, setIsSendingEmailOtp] = useState(false)
+  const [isCheckingEmailOtp, setIsCheckingEmailOtp] = useState(false)
   const [isEmailVerified, setIsEmailVerified] = useState(false)
+  const [emailOtpCode, setEmailOtpCode] = useState('')
+  const [emailOtpSentTo, setEmailOtpSentTo] = useState('')
   const [idProofFile, setIdProofFile] = useState(null)
   const [aadhaarFile, setAadhaarFile] = useState(null)
   const [idProofUrl, setIdProofUrl] = useState('')
@@ -47,6 +77,7 @@ export default function Profile() {
     smartDetection: true,
     manualReview: false,
   })
+  const OTP_REQUEST_TIMEOUT_MS = 15000
 
   useEffect(() => {
     try {
@@ -99,10 +130,12 @@ export default function Profile() {
       }
 
       setProfile({
-        name: localUser.name || 'LokGuard User',
+        name: resolveDisplayName(localUser.name, localUser.email),
         phone: localUser.phone || '',
         email: localUser.email || '',
         location: localUser.location || 'Mumbai, India',
+        pincode: localUser.pincode || '',
+        gender: localUser.gender || '',
         occupation: localUser.occupation || '',
         preferredClaimMethod: localUser.preferredClaimMethod || 'UPI',
       })
@@ -116,6 +149,8 @@ export default function Profile() {
         phone: localUser.phone || '',
         email: localUser.email || '',
         location: localUser.location || 'Mumbai, India',
+        pincode: localUser.pincode || '',
+        gender: localUser.gender || '',
         occupation: localUser.occupation || '',
         preferredClaimMethod: localUser.preferredClaimMethod || 'UPI',
       })
@@ -137,10 +172,12 @@ export default function Profile() {
         const activePlan = data.activePlan || {}
 
         setProfile({
-          name: data.name || localUser.name || 'LokGuard User',
+          name: resolveDisplayName(data.name || localUser.name, data.email || localUser.email),
           phone: data.phone || localUser.phone || '',
           email: data.email || localUser.email || '',
           location: data.location || localUser.location || 'Mumbai, India',
+          pincode: data.pincode || localUser.pincode || '',
+          gender: data.gender || localUser.gender || '',
           occupation: data.occupation || localUser.occupation || '',
           preferredClaimMethod: data.preferredClaimMethod || localUser.preferredClaimMethod || 'UPI',
         })
@@ -154,6 +191,8 @@ export default function Profile() {
           phone: data.phone || localUser.phone || '',
           email: data.email || localUser.email || '',
           location: data.location || localUser.location || 'Mumbai, India',
+          pincode: data.pincode || localUser.pincode || '',
+          gender: data.gender || localUser.gender || '',
           occupation: data.occupation || localUser.occupation || '',
           preferredClaimMethod: data.preferredClaimMethod || localUser.preferredClaimMethod || 'UPI',
         })
@@ -166,7 +205,7 @@ export default function Profile() {
           price: activePlan.price || localPlan.price || 'Not set',
         })
       } catch {
-        setFormStatus('Using offline/local profile data. Firebase data will refresh when connection is back.')
+        setFormStatus('Using your saved profile data.')
       }
     }
 
@@ -186,16 +225,35 @@ export default function Profile() {
     setEditData((prev) => ({ ...prev, [field]: value }))
 
     if (field === 'email') {
-      setIsEmailVerified(Boolean(auth?.currentUser?.emailVerified))
+      setIsEmailVerified(false)
+      setEmailOtpCode('')
+      setEmailOtpSentTo('')
+      setIsSendingEmailOtp(false)
+      setIsCheckingEmailOtp(false)
     }
 
     setFormError('')
     setFormStatus('')
   }
 
-  const updateEmailVerificationState = () => {
-    const verified = Boolean(auth?.currentUser?.emailVerified)
-    setIsEmailVerified(verified)
+  const fetchWithTimeout = async (url, options = {}) => {
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), OTP_REQUEST_TIMEOUT_MS)
+
+    try {
+      return await fetch(url, {
+        ...options,
+        signal: controller.signal,
+      })
+    } finally {
+      clearTimeout(timeoutId)
+    }
+  }
+
+  const persistEmailVerifiedState = async (email) => {
+    setIsEmailVerified(true)
+
+    const normalizedEmail = String(email || '').trim().toLowerCase()
 
     try {
       const localUser = JSON.parse(localStorage.getItem('user') || '{}')
@@ -203,11 +261,12 @@ export default function Profile() {
         'user',
         JSON.stringify({
           ...localUser,
-          email: auth?.currentUser?.email || localUser.email || '',
+          email: normalizedEmail || localUser.email || '',
           verification: {
             ...(localUser.verification || {}),
-            emailVerified: verified,
-            emailVerificationStatus: verified ? 'verified' : 'pending',
+            emailVerified: true,
+            emailVerificationStatus: 'verified',
+            emailVerifiedAt: new Date().toISOString(),
           },
         })
       )
@@ -215,24 +274,25 @@ export default function Profile() {
       // Ignore local cache failures.
     }
 
-    return verified
-  }
-
-  const checkVerificationStatus = async () => {
-    setFormError('')
-    setFormStatus('')
-
-    if (!auth?.currentUser) {
-      setFormError('No signed-in user was found. Please log in again.')
-      return
-    }
-
-    try {
-      await auth.currentUser.reload()
-      const verified = updateEmailVerificationState()
-      setFormStatus(verified ? 'Email is now verified.' : 'Email is still not verified. Check your inbox and spam folder.')
-    } catch (error) {
-      setFormError(error?.message || 'Could not refresh verification status.')
+    const uid = auth?.currentUser?.uid || getStoredUid()
+    if (uid && db) {
+      try {
+        await setDoc(
+          doc(db, 'users', uid),
+          {
+            email: normalizedEmail,
+            verification: {
+              emailVerified: true,
+              emailVerificationStatus: 'verified',
+              emailVerifiedAt: serverTimestamp(),
+            },
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true }
+        )
+      } catch {
+        // Keep local verification status even if remote update fails.
+      }
     }
   }
 
@@ -240,30 +300,83 @@ export default function Profile() {
     setFormError('')
     setFormStatus('')
 
-    if (!auth?.currentUser) {
-      setFormError('No signed-in user was found. Please log in again.')
+    const email = (activeEditSection === 'identity' ? editData.email : profile.email).trim().toLowerCase()
+    const isEmailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+
+    if (!isEmailValid) {
+      setFormError('Enter a valid email before sending OTP.')
       return
     }
 
-    if (auth.currentUser.emailVerified) {
-      updateEmailVerificationState()
-      setFormStatus('Email is already verified.')
-      return
-    }
-
-    setIsVerifyingEmail(true)
+    setIsSendingEmailOtp(true)
 
     try {
-      await sendEmailVerification(auth.currentUser)
-      setFormStatus('Verification email sent. Open the link in your inbox, then refresh the status.')
-    } catch (error) {
-      if (error?.code === 'auth/requires-recent-login') {
-        setFormError('Please sign in again before sending a verification email.')
-      } else {
-        setFormError(error?.message || 'Failed to send verification email.')
+      const response = await fetchWithTimeout(`${otpApiBaseUrl}/send-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      })
+
+      const result = await response.json().catch(() => ({}))
+      if (!response.ok || !result.success) {
+        throw new Error(result.message || 'Failed to send OTP.')
       }
+
+      setEmailOtpSentTo(email)
+      setEmailOtpCode('')
+      setFormStatus(`OTP sent to ${email}. Please check inbox and spam.`)
+    } catch (error) {
+      setFormError(error?.message || 'Failed to send OTP. Ensure OTP API is running.')
     } finally {
-      setIsVerifyingEmail(false)
+      setIsSendingEmailOtp(false)
+    }
+  }
+
+  const isOtpReadyToVerify =
+    !isEmailVerified &&
+    emailOtpSentTo === (activeEditSection === 'identity' ? editData.email : profile.email).trim().toLowerCase() &&
+    /^\d{6}$/.test(emailOtpCode.trim())
+
+  const checkVerificationStatus = async () => {
+    setFormError('')
+    setFormStatus('')
+
+    const email = (activeEditSection === 'identity' ? editData.email : profile.email).trim().toLowerCase()
+    const otp = emailOtpCode.trim()
+
+    if (!emailOtpSentTo || emailOtpSentTo !== email) {
+      setFormError('Send OTP first for the current email address.')
+      return
+    }
+
+    if (!/^\d{6}$/.test(otp)) {
+      setFormError('Enter a valid 6-digit OTP.')
+      return
+    }
+
+    setIsCheckingEmailOtp(true)
+
+    try {
+      const response = await fetchWithTimeout(`${otpApiBaseUrl}/verify-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, otp }),
+      })
+
+      const result = await response.json().catch(() => ({}))
+      if (!response.ok || !result.success) {
+        throw new Error(result.message || 'OTP verification failed.')
+      }
+
+      await persistEmailVerifiedState(email)
+      setEmailOtpCode('')
+      setEmailOtpSentTo('')
+      setFormStatus('Email verified successfully using OTP.')
+    } catch (error) {
+      const isAbort = error?.name === 'AbortError'
+      setFormError(isAbort ? 'Verification timed out. Please try again.' : (error?.message || 'OTP verification failed.'))
+    } finally {
+      setIsCheckingEmailOtp(false)
     }
   }
 
@@ -310,6 +423,8 @@ export default function Profile() {
     email,
     phone,
     location,
+    pincode,
+    gender,
     occupation,
     preferredClaimMethod,
     verification,
@@ -322,6 +437,8 @@ export default function Profile() {
       email,
       phone,
       location,
+      pincode,
+      gender,
       occupation,
       preferredClaimMethod,
       verification,
@@ -345,6 +462,8 @@ export default function Profile() {
       email,
       phone,
       location,
+      pincode,
+      gender,
       occupation,
       preferredClaimMethod,
     })
@@ -363,6 +482,8 @@ export default function Profile() {
       phone: profile.phone || '',
       email: profile.email || '',
       location: profile.location || 'Mumbai, India',
+      pincode: profile.pincode || '',
+      gender: profile.gender || '',
       occupation: profile.occupation || '',
       preferredClaimMethod: profile.preferredClaimMethod || 'UPI',
     })
@@ -393,6 +514,8 @@ export default function Profile() {
     const email = editData.email.trim().toLowerCase()
     const phone = editData.phone.trim()
     const location = editData.location.trim()
+    const pincode = editData.pincode.trim()
+    const gender = editData.gender.trim()
     const occupation = editData.occupation.trim()
     const preferredClaimMethod = editData.preferredClaimMethod.trim()
 
@@ -405,8 +528,13 @@ export default function Profile() {
       return
     }
 
-    if (shouldSaveWork && !location) {
-      setFormError('Location is required for Work zone.')
+    if (shouldSaveWork && (!location || !pincode)) {
+      setFormError('Location and pincode are required for Work zone.')
+      return
+    }
+
+    if (shouldSaveWork && pincode && !/^[1-9]\d{5}$/.test(pincode)) {
+      setFormError('Enter a valid 6-digit pincode.')
       return
     }
 
@@ -425,27 +553,29 @@ export default function Profile() {
       }
     }
 
-    const canSkipPhoneVerification = true
-
     const uid = auth?.currentUser?.uid || getStoredUid()
-    if (!uid || !db) {
-      setFormError('Firebase session not found. Please login again to save profile.')
+    if (!uid) {
+      setFormError('Session not found. Please login again to save profile.')
       return
     }
+
+    const effectivePhone = shouldSaveIdentity ? normalizedPhone : profile.phone
+    const hasPhone = Boolean(effectivePhone)
 
     const payload = {
       name: shouldSaveIdentity ? name : profile.name,
       email: shouldSaveIdentity ? email : profile.email,
       phone: shouldSaveIdentity ? normalizedPhone : profile.phone,
       location: shouldSaveWork ? location : profile.location,
+      pincode: shouldSaveWork ? pincode : profile.pincode,
+      gender: shouldSaveIdentity ? gender : profile.gender,
       occupation: shouldSaveWork ? (occupation || 'Gig worker') : profile.occupation,
       preferredClaimMethod: shouldSaveSummary || shouldSaveWork
         ? (preferredClaimMethod || 'UPI')
         : profile.preferredClaimMethod,
       verification: {
         phoneVerified: false,
-        phoneVerificationStatus: (shouldSaveIdentity ? normalizedPhone : profile.phone) ? 'not-verified' : 'not-provided',
-        phoneVerificationNote: canSkipPhoneVerification ? 'phone-verification-disabled' : '',
+        phoneVerificationStatus: hasPhone ? 'not-enabled' : 'not-provided',
         phoneVerifiedAt: null,
         emailVerified: Boolean(isEmailVerified || auth?.currentUser?.emailVerified),
         emailVerificationStatus: isEmailVerified || auth?.currentUser?.emailVerified ? 'verified' : 'pending',
@@ -489,11 +619,13 @@ export default function Profile() {
         phone: payload.phone,
         email: payload.email,
         location: payload.location,
+        pincode: payload.pincode,
+        gender: payload.gender,
         occupation: payload.occupation,
         preferredClaimMethod: payload.preferredClaimMethod,
       }
 
-      // Optimistic update: show new values immediately while Firebase sync continues.
+      // Optimistic update: show new values immediately while background sync continues
       setProfile(optimisticProfile)
       setEditData(optimisticProfile)
       setActiveEditSection(null)
@@ -511,11 +643,8 @@ export default function Profile() {
           updatedAt: new Date().toISOString(),
         })
       )
-      setFormStatus('Saved locally. Syncing to Firebase...')
-
-      // Yield once so React can paint the normal view immediately.
+      // Optimistic update complete, now sync in background
       await new Promise((resolve) => setTimeout(resolve, 0))
-
       setIsSaving(false)
 
       if (shouldSaveWork && occupation && storage) {
@@ -571,12 +700,13 @@ export default function Profile() {
           email: payload.email,
           phone: payload.phone,
           location: payload.location,
+          pincode: payload.pincode,
+          gender: payload.gender,
           occupation: payload.occupation,
           preferredClaimMethod: payload.preferredClaimMethod,
           verification: {
             phoneVerified: false,
-            phoneVerificationStatus: normalizedPhone ? 'not-verified' : 'not-provided',
-            phoneVerificationNote: 'phone-verification-disabled',
+            phoneVerificationStatus: hasPhone ? 'not-enabled' : 'not-provided',
             emailVerified: Boolean(isEmailVerified || auth?.currentUser?.emailVerified),
             emailVerificationStatus: isEmailVerified || auth?.currentUser?.emailVerified ? 'verified' : 'pending',
             occupationVerificationStatus: occupation ? 'pending' : 'not-required',
@@ -596,13 +726,13 @@ export default function Profile() {
       setIdProofFile(null)
       setAadhaarFile(null)
 
-      setFormStatus(`${sectionLabel} updated and synced to Firebase.`)
+      setFormStatus(`${sectionLabel} updated successfully.`)
       window.dispatchEvent(new Event('lokguard-auth-changed'))
     } catch (error) {
       const code = error?.code || ''
 
       if (code === 'permission-denied' || code === 'storage/unauthorized' || code === 'storage/unauthenticated') {
-        setFormError('Firebase permissions blocked this save. Deploy firestore.rules and storage.rules, then try again.')
+        setFormError('Unable to save your changes. Please check your permissions and try again.')
       } else if (
         code === 'unavailable' ||
         code === 'failed-precondition' ||
@@ -615,8 +745,7 @@ export default function Profile() {
         }
         const verification = {
           phoneVerified: false,
-          phoneVerificationStatus: normalizedPhone ? 'not-verified' : 'not-provided',
-          phoneVerificationNote: 'phone-verification-disabled',
+          phoneVerificationStatus: hasPhone ? 'not-enabled' : 'not-provided',
           emailVerified: Boolean(isEmailVerified || auth?.currentUser?.emailVerified),
           emailVerificationStatus: isEmailVerified || auth?.currentUser?.emailVerified ? 'verified' : 'pending',
           occupationVerificationStatus: occupation ? 'pending' : 'not-required',
@@ -627,6 +756,8 @@ export default function Profile() {
           email: payload.email,
           phone: payload.phone,
           location: payload.location,
+          pincode: payload.pincode,
+          gender: payload.gender,
           occupation: payload.occupation,
           preferredClaimMethod: payload.preferredClaimMethod,
           verification,
@@ -634,11 +765,11 @@ export default function Profile() {
         })
 
         setActiveEditSection(null)
-        setFormStatus('You appear offline. Profile was saved locally and marked for later Firebase sync.')
+        setFormStatus('Profile saved. You can continue editing or viewing other sections.')
       } else if (code === 'storage/object-not-found' || code === 'storage/bucket-not-found') {
-        setFormError('Firebase Storage is not ready. Enable Storage in Firebase Console and retry.')
+        setFormError('Unable to save your documents. Please try again.')
       } else {
-        setFormError(error?.message || 'Failed to save profile to Firebase. Please try again.')
+        setFormError(error?.message || 'Unable to save profile. Please check your connection and try again.')
       }
     } finally {
       setIsSaving(false)
@@ -701,7 +832,7 @@ export default function Profile() {
           </div>
           {!isEmailVerified && (
             <div className="auth-status auth-status-error" style={{ marginBottom: '1rem' }}>
-              Email not verified. Send a verification link and refresh the status after confirming it.
+              Email not verified. Send OTP and verify it below.
             </div>
           )}
           {activeEditSection === 'identity' ? (
@@ -716,6 +847,20 @@ export default function Profile() {
                 />
               </label>
               <label>
+                Gender
+                <select
+                  className="form-input"
+                  value={editData.gender}
+                  onChange={(e) => handleEditChange('gender', e.target.value)}
+                >
+                  <option value="">Select gender</option>
+                  <option value="Male">Male</option>
+                  <option value="Female">Female</option>
+                  <option value="Other">Other</option>
+                  <option value="Prefer not to say">Prefer not to say</option>
+                </select>
+              </label>
+              <label>
                 Phone number
                 <input
                   className="form-input"
@@ -723,7 +868,7 @@ export default function Profile() {
                   onChange={(e) => handleEditChange('phone', e.target.value)}
                   placeholder="+91 98765 43210"
                 />
-                <small className="profile-file-note">Phone verification is currently disabled.</small>
+                <small className="profile-file-note">Phone verification is removed. Use email verification below.</small>
               </label>
               <label>
                 Email
@@ -736,28 +881,43 @@ export default function Profile() {
                 <span className={`profile-verification-pill ${isEmailVerified ? 'verified' : 'pending'}`}>
                   {isEmailVerified ? 'Email verified' : 'Email not verified'}
                 </span>
-                <div className="profile-actions" style={{ marginTop: '0.75rem' }}>
-                  <button
-                    type="button"
-                    className="profile-action-button profile-action-button--secondary"
-                    onClick={handleEmailVerification}
-                    disabled={isVerifyingEmail}
-                  >
-                    {isVerifyingEmail ? 'Sending...' : 'Send verification email'}
-                  </button>
-                  <button
-                    type="button"
-                    className="profile-action-button profile-action-button--secondary"
-                    onClick={checkVerificationStatus}
-                  >
-                    Refresh status
-                  </button>
-                </div>
+                {!isEmailVerified && (
+                  <>
+                    <div className="profile-actions" style={{ marginTop: '0.75rem' }}>
+                      <button
+                        type="button"
+                        className="profile-action-button profile-action-button--secondary"
+                        onClick={handleEmailVerification}
+                        disabled={isSendingEmailOtp}
+                      >
+                        {isSendingEmailOtp ? 'Sending OTP...' : 'Send OTP'}
+                      </button>
+                      <button
+                        type="button"
+                        className="profile-action-button profile-action-button--secondary"
+                        onClick={checkVerificationStatus}
+                        disabled={!isOtpReadyToVerify || isCheckingEmailOtp}
+                      >
+                        {isCheckingEmailOtp ? 'Verifying...' : 'Verify OTP'}
+                      </button>
+                    </div>
+                    <input
+                      className="form-input"
+                      value={emailOtpCode}
+                      onChange={(e) => setEmailOtpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                      placeholder="Enter 6-digit OTP"
+                      inputMode="numeric"
+                      style={{ marginTop: '0.75rem' }}
+                    />
+                    <small className="profile-file-note">Didn't receive OTP? Check spam or ensure the OTP API server is running.</small>
+                  </>
+                )}
               </label>
             </div>
           ) : (
             <div className="profile-stack">
               <div><span>Name</span><strong>{profile.name || 'Not provided'}</strong></div>
+              <div><span>Gender</span><strong>{profile.gender || 'Not provided'}</strong></div>
               <div><span>Phone</span><strong>{profile.phone || 'Not provided'}</strong></div>
               <div><span>Email</span><strong>{profile.email || 'Not provided'}</strong></div>
               {!isEmailVerified && <div><span>Verification</span><strong>Email not verified</strong></div>}
@@ -805,6 +965,17 @@ export default function Profile() {
                   value={editData.location}
                   onChange={(e) => handleEditChange('location', e.target.value)}
                   placeholder="Mumbai, India"
+                />
+              </label>
+              <label>
+                Pincode
+                <input
+                  className="form-input"
+                  value={editData.pincode}
+                  onChange={(e) => handleEditChange('pincode', e.target.value.replace(/\D/g, '').slice(0, 6))}
+                  placeholder="400001"
+                  inputMode="numeric"
+                  maxLength={6}
                 />
               </label>
               <label>
@@ -857,6 +1028,7 @@ export default function Profile() {
           ) : (
             <div className="profile-stack">
               <div><span>City</span><strong>{profile.location}</strong></div>
+              <div><span>Pincode</span><strong>{profile.pincode || 'Not provided'}</strong></div>
               <div><span>Risk level</span><strong>High disruption risk</strong></div>
               <div><span>Status</span><strong>{isEmailVerified ? 'Email verified' : 'Email verification pending'}</strong></div>
             </div>

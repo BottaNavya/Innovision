@@ -15,11 +15,10 @@ export default function Home() {
       <section className="hero-grid landing-hero">
         <div className="hero-copy">
           <span className="eyebrow">For gig workers</span>
-          <h1>Income protection built for the realities of city work.</h1>
+          <h1>TinyBheema: micro-insurance for every shift.</h1>
           <p>
-            LokGuard AI protects delivery riders and freelancers when rain, traffic, or
-            pollution interrupt their day. Premiums adjust by location, disruptions are
-            detected in real time, and claims stay simple.
+            LokGuard&apos;s TinyBheema provides affordable, on-demand micro-insurance tailored for gig workers,
+            ensuring financial protection anytime, anywhere.
           </p>
           <div className="hero-actions">
             <Link to="/auth" className="primary-button">Get Started</Link>
@@ -74,7 +73,7 @@ export default function Home() {
 
         <div className="cta-strip card">
           <div>
-            <h3>Why LokGuard AI?</h3>
+            <h3>Why TinyBheema by LokGuard?</h3>
             <p>
               We don&apos;t just track disruptions — we protect your income from them.
             </p>

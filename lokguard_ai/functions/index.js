@@ -1,7 +1,7 @@
 const crypto = require('crypto')
 const admin = require('firebase-admin')
 const nodemailer = require('nodemailer')
-const { onCall, HttpsError } = require('firebase-functions/v2/https')
+const { onCall, HttpsError, onRequest } = require('firebase-functions/v2/https')
 const { setGlobalOptions } = require('firebase-functions')
 
 setGlobalOptions({ maxInstances: 10 })
@@ -12,7 +12,8 @@ if (!admin.apps.length) {
 
 const db = admin.firestore()
 const otpsCollection = db.collection('emailOtps')
-const otpTtlMs = 10 * 60 * 1000
+const otpTtlMs = 5 * 60 * 1000
+const maxAttempts = 5
 
 function normalizeEmail(email) {
   return String(email || '').trim().toLowerCase()
@@ -31,44 +32,27 @@ function hashOtp(otp) {
 }
 
 function getMailer() {
-  const host = process.env.SMTP_HOST
-  const port = Number(process.env.SMTP_PORT || 587)
-  const secure = String(process.env.SMTP_SECURE || 'false') === 'true'
-  const user = process.env.SMTP_USER
-  const pass = process.env.SMTP_PASS
-  const from = process.env.SMTP_FROM || user
+  const user = process.env.GMAIL_USER
+  const pass = process.env.GMAIL_APP_PASSWORD
+  const from = process.env.GMAIL_FROM || user
 
-  if (!host || !user || !pass || !from) {
+  if (!user || !pass || !from) {
     return null
   }
 
   return {
     from,
     transport: nodemailer.createTransport({
-      host,
-      port,
-      secure,
+      service: 'gmail',
       auth: { user, pass },
     }),
   }
 }
 
-exports.sendEmailOtp = onCall(async (request) => {
-  if (!request.auth) {
-    throw new HttpsError('unauthenticated', 'You must be signed in to request email OTP.')
-  }
-
-  const email = normalizeEmail(request.data && request.data.email)
-  if (!isValidEmail(email)) {
-    throw new HttpsError('invalid-argument', 'Please provide a valid email address.')
-  }
-
+async function sendOtpToEmail(email) {
   const mailer = getMailer()
   if (!mailer) {
-    throw new HttpsError(
-      'failed-precondition',
-      'SMTP is not configured. Set SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, and SMTP_FROM for Functions.'
-    )
+    throw new Error('Gmail SMTP is not configured. Set GMAIL_USER, GMAIL_APP_PASSWORD, and optional GMAIL_FROM.')
   }
 
   const otp = generateOtp()
@@ -77,12 +61,12 @@ exports.sendEmailOtp = onCall(async (request) => {
 
   await otpsCollection.doc(email).set(
     {
-      uid: request.auth.uid,
       email,
       codeHash,
       expiresAt,
       attempts: 0,
       verified: false,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     },
     { merge: true }
@@ -91,64 +75,74 @@ exports.sendEmailOtp = onCall(async (request) => {
   await mailer.transport.sendMail({
     from: mailer.from,
     to: email,
-    subject: 'LokGuard AI email OTP',
-    text: `Your LokGuard AI verification code is ${otp}. It expires in 10 minutes.`,
-    html: `<p>Your LokGuard AI verification code is <strong>${otp}</strong>.</p><p>It expires in 10 minutes.</p>`,
+    subject: 'TinyBheema email OTP',
+    text: `Your TinyBheema verification OTP is ${otp}. It expires in 5 minutes.`,
+    html: `<p>Your TinyBheema verification OTP is <strong>${otp}</strong>.</p><p>It expires in 5 minutes.</p>`,
   })
 
   return {
     success: true,
+    message: 'OTP sent successfully.',
     expiresInSeconds: Math.floor(otpTtlMs / 1000),
   }
-})
+}
 
-exports.verifyEmailOtp = onCall(async (request) => {
-  if (!request.auth) {
-    throw new HttpsError('unauthenticated', 'You must be signed in to verify email OTP.')
-  }
-
-  const email = normalizeEmail(request.data && request.data.email)
-  const otp = String(request.data && request.data.otp ? request.data.otp : '').trim()
-
-  if (!isValidEmail(email)) {
-    throw new HttpsError('invalid-argument', 'Please provide a valid email address.')
-  }
-
-  if (!/^\d{6}$/.test(otp)) {
-    throw new HttpsError('invalid-argument', 'OTP must be 6 digits.')
-  }
-
+async function verifyOtpForEmail(email, otp) {
   const otpDoc = await otpsCollection.doc(email).get()
   if (!otpDoc.exists) {
-    throw new HttpsError('not-found', 'OTP not found. Please request a new code.')
+    return {
+      success: false,
+      statusCode: 404,
+      message: 'OTP not found. Please request a new code.',
+    }
   }
 
   const data = otpDoc.data() || {}
-  if (data.uid !== request.auth.uid) {
-    throw new HttpsError('permission-denied', 'This OTP does not belong to the current user.')
+  const now = Date.now()
+  const expiresAt = data.expiresAt && typeof data.expiresAt.toMillis === 'function'
+    ? data.expiresAt.toMillis()
+    : 0
+
+  if (!expiresAt || now > expiresAt) {
+    return {
+      success: false,
+      statusCode: 410,
+      message: 'OTP expired. Please request a new code.',
+    }
   }
 
-  const now = Date.now()
-  const expiresAt = data.expiresAt && typeof data.expiresAt.toMillis === 'function' ? data.expiresAt.toMillis() : 0
-  if (!expiresAt || now > expiresAt) {
-    throw new HttpsError('deadline-exceeded', 'OTP expired. Please request a new code.')
+  const attempts = Number(data.attempts || 0)
+  if (attempts >= maxAttempts) {
+    return {
+      success: false,
+      statusCode: 429,
+      message: 'Too many invalid attempts. Request a new OTP.',
+    }
   }
 
   if (data.verified) {
-    return { success: true, alreadyVerified: true }
+    return {
+      success: true,
+      statusCode: 200,
+      message: 'OTP already verified.',
+      alreadyVerified: true,
+    }
   }
 
-  const nextAttempts = Number(data.attempts || 0) + 1
   if (hashOtp(otp) !== data.codeHash) {
     await otpDoc.ref.set(
       {
-        attempts: nextAttempts,
+        attempts: attempts + 1,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       },
       { merge: true }
     )
 
-    throw new HttpsError('invalid-argument', 'Incorrect OTP.')
+    return {
+      success: false,
+      statusCode: 400,
+      message: 'Invalid OTP.',
+    }
   }
 
   await otpDoc.ref.set(
@@ -160,18 +154,128 @@ exports.verifyEmailOtp = onCall(async (request) => {
     { merge: true }
   )
 
-  await db.collection('users').doc(request.auth.uid).set(
-    {
-      email,
-      verification: {
-        emailVerified: true,
-        emailVerificationStatus: 'verified',
-        emailVerifiedAt: admin.firestore.FieldValue.serverTimestamp(),
-      },
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    },
-    { merge: true }
-  )
+  return {
+    success: true,
+    statusCode: 200,
+    message: 'OTP verified successfully.',
+  }
+}
 
-  return { success: true }
+function parseRequestBody(req) {
+  if (req.body && typeof req.body === 'object') {
+    return req.body
+  }
+
+  if (typeof req.body === 'string') {
+    try {
+      return JSON.parse(req.body)
+    } catch {
+      return {}
+    }
+  }
+
+  return {}
+}
+
+exports.emailOtpApi = onRequest({ cors: true }, async (req, res) => {
+  res.set('Content-Type', 'application/json')
+
+  if (req.method !== 'POST') {
+    res.status(405).json({ success: false, message: 'Method not allowed. Use POST.' })
+    return
+  }
+
+  const body = parseRequestBody(req)
+  const email = normalizeEmail(body.email)
+
+  if (req.path === '/send-otp') {
+    if (!isValidEmail(email)) {
+      res.status(400).json({ success: false, message: 'Valid email is required.' })
+      return
+    }
+
+    try {
+      const result = await sendOtpToEmail(email)
+      res.status(200).json(result)
+      return
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        message: error && error.message ? error.message : 'Failed to send OTP.',
+      })
+      return
+    }
+  }
+
+  if (req.path === '/verify-otp') {
+    const otp = String(body.otp || '').trim()
+
+    if (!isValidEmail(email)) {
+      res.status(400).json({ success: false, message: 'Valid email is required.' })
+      return
+    }
+
+    if (!/^\d{6}$/.test(otp)) {
+      res.status(400).json({ success: false, message: 'OTP must be 6 digits.' })
+      return
+    }
+
+    try {
+      const result = await verifyOtpForEmail(email, otp)
+      res.status(result.statusCode || 200).json({
+        success: result.success,
+        message: result.message,
+        alreadyVerified: Boolean(result.alreadyVerified),
+      })
+      return
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        message: error && error.message ? error.message : 'Failed to verify OTP.',
+      })
+      return
+    }
+  }
+
+  res.status(404).json({
+    success: false,
+    message: 'Route not found. Use POST /send-otp or POST /verify-otp.',
+  })
+})
+
+exports.sendEmailOtp = onCall(async (request) => {
+  const email = normalizeEmail(request.data && request.data.email)
+  if (!isValidEmail(email)) {
+    throw new HttpsError('invalid-argument', 'Please provide a valid email address.')
+  }
+
+  try {
+    return await sendOtpToEmail(email)
+  } catch (error) {
+    throw new HttpsError('internal', error && error.message ? error.message : 'Failed to send OTP.')
+  }
+})
+
+exports.verifyEmailOtp = onCall(async (request) => {
+  const email = normalizeEmail(request.data && request.data.email)
+  const otp = String(request.data && request.data.otp ? request.data.otp : '').trim()
+
+  if (!isValidEmail(email)) {
+    throw new HttpsError('invalid-argument', 'Please provide a valid email address.')
+  }
+
+  if (!/^\d{6}$/.test(otp)) {
+    throw new HttpsError('invalid-argument', 'OTP must be 6 digits.')
+  }
+
+  const result = await verifyOtpForEmail(email, otp)
+  if (!result.success) {
+    throw new HttpsError('invalid-argument', result.message)
+  }
+
+  return {
+    success: true,
+    alreadyVerified: Boolean(result.alreadyVerified),
+    message: result.message,
+  }
 })

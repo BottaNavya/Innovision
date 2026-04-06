@@ -153,7 +153,7 @@ export default function Policy() {
     <div className="page-shell policy-page">
       <section className="page-header">
         <span className="eyebrow">Policy management</span>
-        <h1>Choose your LokGuard plan</h1>
+        <h1>Choose your TinyBheema plan</h1>
         <p>
           Select a plan, compare coverage, and activate instantly. Your selected
           plan is saved and used for policy pricing.
