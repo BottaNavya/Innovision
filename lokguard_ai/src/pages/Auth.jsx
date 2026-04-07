@@ -259,15 +259,11 @@ export default function Auth() {
           { onConflict: 'id' }
         )
 
-      const fallbackProfile = { name, email, phone, location, pincode: '' }
-
       if (data.session) {
-        await finalizeSessionFromProfile(user, fallbackProfile)
-        setAuthStatus('Registration complete. Redirecting to dashboard...')
-        navigate('/dashboard')
-      } else {
-        setAuthStatus('Registration complete. Please verify your email, then sign in.')
+        await supabase.auth.signOut()
       }
+
+      setAuthStatus('Account created successfully. Please login with email or phone + password.')
 
       setRegisterData({
         name: '',
@@ -349,7 +345,12 @@ export default function Auth() {
       refreshCaptcha()
       navigate('/dashboard')
     } catch (error) {
-      setAuthError(error?.message || 'Login failed. Please check your credentials and try again.')
+      const rawMessage = String(error?.message || '')
+      if (/email not confirmed|email_not_confirmed/i.test(rawMessage)) {
+        setAuthError('Login is blocked by Supabase Email Confirm setting. Disable Confirm email in Supabase Auth to allow login first, then verify email later in Profile before raising claims.')
+      } else {
+        setAuthError(error?.message || 'Login failed. Please check your credentials and try again.')
+      }
       refreshCaptcha()
     } finally {
       if (mountedRef.current) {
