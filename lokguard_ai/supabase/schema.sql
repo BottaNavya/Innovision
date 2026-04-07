@@ -48,6 +48,22 @@ create table if not exists public.users (
   updated_at timestamptz default now()
 );
 
+create or replace function public.set_updated_at()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
+
+drop trigger if exists users_set_updated_at on public.users;
+create trigger users_set_updated_at
+before update on public.users
+for each row
+execute function public.set_updated_at();
+
 create index if not exists users_email_lower_idx on public.users (lower(email));
 create index if not exists users_phone_idx on public.users (phone);
 

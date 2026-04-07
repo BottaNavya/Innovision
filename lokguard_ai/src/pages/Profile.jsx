@@ -648,6 +648,7 @@ export default function Profile() {
         submittedAt: shouldSaveWork && occupation ? new Date().toISOString() : null,
       }
 
+      const preferredClaimMethodValue = payload.preferredClaimMethod
       payload.preferred_claim_method = payload.preferredClaimMethod
       delete payload.preferredClaimMethod
 
@@ -664,7 +665,7 @@ export default function Profile() {
           pincode: payload.pincode,
           gender: payload.gender,
           occupation: payload.occupation,
-          preferredClaimMethod: payload.preferredClaimMethod,
+          preferredClaimMethod: preferredClaimMethodValue,
           verification: {
             phoneVerified: false,
             phoneVerificationStatus: hasPhone ? 'not-enabled' : 'not-provided',
@@ -721,7 +722,7 @@ export default function Profile() {
           pincode: payload.pincode,
           gender: payload.gender,
           occupation: payload.occupation,
-          preferredClaimMethod: payload.preferredClaimMethod,
+          preferredClaimMethod: preferredClaimMethodValue,
           verification,
           documents,
         })
