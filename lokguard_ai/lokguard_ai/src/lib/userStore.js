@@ -1,6 +1,7 @@
 import { supabase } from '../supabaseClient'
 
 const USERS_TABLE_MISSING_PATTERN = /could not find the table ['"`]public\.users['"`] in the schema cache|relation "public\.users" does not exist|schema cache/i
+const LOGIN_RESOLVER_MISSING_PATTERN = /could not find the function ['"`]public\.resolve_login_email\(input_identifier\)['"`] in the schema cache|could not find the function ['"`]public\.resolve_login_email\(text\)['"`] in the schema cache|function public\.resolve_login_email\(.*\) does not exist|schema cache/i
 
 const isUsersTableMissingError = (error) => {
   const message = String(error?.message || error?.details || error?.hint || '')
@@ -57,7 +58,14 @@ export async function resolveLoginEmail(identifier) {
     input_identifier: inputIdentifier,
   })
 
-  if (error) throw error
+  if (error) {
+    const message = String(error?.message || error?.details || error?.hint || '')
+    if (LOGIN_RESOLVER_MISSING_PATTERN.test(message)) {
+      throw new Error('Login lookup is not deployed in this environment yet. Run lokguard_ai/supabase/schema.sql on your production Supabase project, then retry.')
+    }
+
+    throw error
+  }
   return data || ''
 }
 

@@ -1,0 +1,79 @@
+mutation CreateSeedData @transaction @auth(level: PUBLIC, insecureReason: "This mutation is intended for initial data seeding and does not expose sensitive user data.") {
+  user1: user_insert(data: {
+    id: "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+    authId: "firebase-auth-id-1",
+    displayName: "Alice Smith",
+    email: "alice.smith@example.com",
+    createdAt: "2023-01-15T10:00:00Z",
+    phoneNumber: "+15551234567",
+    address: "123 Main St, Anytown, USA"
+  })
+  user2: user_insert(data: {
+    id: "b0eebc99-9c0b-4ef8-bb6d-6bb9bd380a22",
+    authId: "firebase-auth-id-2",
+    displayName: "Bob Johnson",
+    email: "bob.johnson@example.com",
+    createdAt: "2023-01-20T11:00:00Z",
+    phoneNumber: "+15559876543",
+    address: "456 Oak Ave, Otherville, USA"
+  })
+  policy1: policy_insert(data: {
+    id: "c0eebc99-9c0b-4ef8-bb6d-6bb9bd380a33",
+    name: "Standard Travel Insurance",
+    description: "Comprehensive travel insurance for individuals.",
+    coverageAmount: 50000.0,
+    premiumAmount: 150.0,
+    createdAt: "2023-02-01T09:00:00Z",
+    coverageDetails: "Covers medical emergencies, trip cancellations, and lost luggage.",
+    isActive: true
+  })
+  policy2: policy_insert(data: {
+    id: "d0eebc99-9c0b-4ef8-bb6d-6bb9bd380a44",
+    name: "Premium Device Protection",
+    description: "Extended warranty and accidental damage protection for electronics.",
+    coverageAmount: 1000.0,
+    premiumAmount: 50.0,
+    createdAt: "2023-02-05T14:30:00Z",
+    coverageDetails: "Covers screen damage, water damage, and theft.",
+    isActive: true
+  })
+  subscriptionType1: subscriptionType_insert(data: {
+    id: "e0eebc99-9c0b-4ef8-bb6d-6bb9bd380a55",
+    userId: "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+    policyId: "c0eebc99-9c0b-4ef8-bb6d-6bb9bd380a33",
+    startDate: "2023-03-01",
+    endDate: "2024-02-28",
+    status: "Active",
+    createdAt: "2023-02-20T10:00:00Z"
+  })
+  subscriptionType2: subscriptionType_insert(data: {
+    id: "f0eebc99-9c0b-4ef8-bb6d-6bb9bd380a66",
+    userId: "b0eebc99-9c0b-4ef8-bb6d-6bb9bd380a22",
+    policyId: "d0eebc99-9c0b-4ef8-bb6d-6bb9bd380a44",
+    startDate: "2023-03-10",
+    endDate: "2024-03-09",
+    status: "Active",
+    createdAt: "2023-03-01T15:00:00Z"
+  })
+  claim1: claim_insert(data: {
+    id: "10eebc99-9c0b-4ef8-bb6d-6bb9bd380a77",
+    userId: "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+    subscriptionTypeId: "e0eebc99-9c0b-4ef8-bb6d-6bb9bd380a55",
+    disruptionType: "Flight Delay",
+    incidentDate: "2023-04-05",
+    requestedAmount: 500.0,
+    status: "Pending",
+    createdAt: "2023-04-06T08:00:00Z",
+    description: "Flight BA249 delayed by over 6 hours due to technical issues."
+  })
+  disruptionEvent1: disruptionEvent_insert(data: {
+    id: "20eebc99-9c0b-4ef8-bb6d-6bb9bd380a88",
+    type: "Flight Delay",
+    severity: "High",
+    location: "London Heathrow Airport",
+    eventDate: "2023-04-05T14:00:00Z",
+    createdAt: "2023-04-05T18:00:00Z",
+    duration: 360,
+    impactDetails: "Thousands of passengers affected, multiple cancellations."
+  })
+}

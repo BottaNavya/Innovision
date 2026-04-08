@@ -1,9 +1,12 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import Card from '../components/Card'
 import '../App.css'
 
 export default function Claims() {
+  const navigate = useNavigate()
   const [showClaimModal, setShowClaimModal] = useState(false)
+  const [isEmailVerifiedForClaims, setIsEmailVerifiedForClaims] = useState(false)
   const [newClaim, setNewClaim] = useState({
     title: '',
     amount: '',
@@ -41,6 +44,21 @@ export default function Claims() {
     },
   ])
 
+  useEffect(() => {
+    const syncVerificationState = () => {
+      try {
+        const localUser = JSON.parse(localStorage.getItem('user') || '{}')
+        setIsEmailVerifiedForClaims(Boolean(localUser?.verification?.emailVerified))
+      } catch {
+        setIsEmailVerifiedForClaims(false)
+      }
+    }
+
+    syncVerificationState()
+    window.addEventListener('lokguard-auth-changed', syncVerificationState)
+    return () => window.removeEventListener('lokguard-auth-changed', syncVerificationState)
+  }, [])
+
   const handleFileUpload = (e) => {
     const file = e.target.files[0]
     if (file) {
@@ -50,6 +68,13 @@ export default function Claims() {
 
   const handleRaiseClaim = (e) => {
     e.preventDefault()
+
+    if (!isEmailVerifiedForClaims) {
+      alert('Verify your email in Profile before raising a claim.')
+      setShowClaimModal(false)
+      navigate('/profile')
+      return
+    }
 
     if (!newClaim.title || !newClaim.amount || !newClaim.description) {
       alert('Please fill all fields')
@@ -84,7 +109,23 @@ export default function Claims() {
 
       <div className="page-grid">
         <Card title="Claims overview" icon="🧾" badge={`${claims.length} total`}>
-          <button className="raise-claim-button" onClick={() => setShowClaimModal(true)}>
+          {!isEmailVerifiedForClaims && (
+            <p className="auth-status auth-status-error" style={{ marginBottom: '0.75rem' }}>
+              Verify your email in Profile to unlock claim submission.
+            </p>
+          )}
+
+          <button
+            className="raise-claim-button"
+            onClick={() => {
+              if (!isEmailVerifiedForClaims) {
+                navigate('/profile')
+                return
+              }
+
+              setShowClaimModal(true)
+            }}
+          >
             + Raise Claim
           </button>
 

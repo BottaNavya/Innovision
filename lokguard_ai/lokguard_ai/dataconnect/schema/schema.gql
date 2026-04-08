@@ -1,0 +1,51 @@
+type User @table {
+  authId: String!
+  displayName: String!
+  email: String!
+  createdAt: Timestamp!
+  phoneNumber: String
+  address: String
+}
+
+type Policy @table {
+  name: String!
+  description: String!
+  coverageAmount: Float!
+  premiumAmount: Float!
+  createdAt: Timestamp!
+  coverageDetails: String
+  isActive: Boolean
+}
+
+type SubscriptionType @table {
+  user: User!
+  policy: Policy!
+  startDate: Date!
+  endDate: Date!
+  status: String!
+  createdAt: Timestamp!
+}
+
+type Claim @table {
+  user: User!
+  subscriptionType: SubscriptionType!
+  disruptionType: String!
+  incidentDate: Date!
+  requestedAmount: Float!
+  status: String!
+  createdAt: Timestamp!
+  description: String
+  resolutionDate: Date
+  approvedAmount: Float
+  rejectionReason: String
+}
+
+type DisruptionEvent @table {
+  type: String!
+  severity: String!
+  location: String!
+  eventDate: Timestamp!
+  createdAt: Timestamp!
+  duration: Int
+  impactDetails: String
+}

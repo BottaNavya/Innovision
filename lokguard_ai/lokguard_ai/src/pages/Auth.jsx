@@ -56,6 +56,11 @@ export default function Auth() {
   const [authStatus, setAuthStatus] = useState('')
   const [authError, setAuthError] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [showEmailOtpStep, setShowEmailOtpStep] = useState(false)
+  const [verificationEmail, setVerificationEmail] = useState('')
+  const [verificationOtp, setVerificationOtp] = useState('')
+  const [isSendingOtp, setIsSendingOtp] = useState(false)
+  const [isVerifyingOtp, setIsVerifyingOtp] = useState(false)
 
   useEffect(() => {
     mountedRef.current = true
@@ -73,6 +78,9 @@ export default function Auth() {
     setMode(nextMode)
     setAuthStatus('')
     setAuthError('')
+    setShowEmailOtpStep(false)
+    setVerificationEmail('')
+    setVerificationOtp('')
     setCaptchaInput('')
     refreshCaptcha()
   }
@@ -259,15 +267,11 @@ export default function Auth() {
           { onConflict: 'id' }
         )
 
-      const fallbackProfile = { name, email, phone, location, pincode: '' }
-
       if (data.session) {
-        await finalizeSessionFromProfile(user, fallbackProfile)
-        setAuthStatus('Registration complete. Redirecting to dashboard...')
-        navigate('/dashboard')
-      } else {
-        setAuthStatus('Registration complete. Please verify your email, then sign in.')
+        await supabase.auth.signOut()
       }
+
+      setAuthStatus('Account created successfully. Please login with email or phone + password.')
 
       setRegisterData({
         name: '',
@@ -308,6 +312,83 @@ export default function Auth() {
     return normalizeEmail(resolvedEmail)
   }
 
+  const sendEmailVerificationOtp = async (email) => {
+    const normalizedEmail = normalizeEmail(email)
+    if (!isEmail(normalizedEmail)) {
+      setAuthError('Enter a valid email to receive OTP.')
+      return false
+    }
+
+    try {
+      setIsSendingOtp(true)
+      const { error } = await supabase.auth.signInWithOtp({
+        email: normalizedEmail,
+        options: {
+          shouldCreateUser: false,
+        },
+      })
+
+      if (error) throw error
+
+      setVerificationEmail(normalizedEmail)
+      setVerificationOtp('')
+      setShowEmailOtpStep(true)
+      setAuthError('')
+      setAuthStatus(`OTP sent to ${normalizedEmail}. Enter 7 to 8 digits to verify and continue login.`)
+      return true
+    } catch (error) {
+      setAuthError(error?.message || 'Unable to send verification OTP. Please try again.')
+      return false
+    } finally {
+      if (mountedRef.current) {
+        setIsSendingOtp(false)
+      }
+    }
+  }
+
+  const verifyEmailOtpAndContinueLogin = async () => {
+    setAuthStatus('')
+    setAuthError('')
+
+    const otp = verificationOtp.trim()
+    if (!/^\d{7,8}$/.test(otp)) {
+      setAuthError('Enter a valid OTP with 7 to 8 digits.')
+      return
+    }
+
+    try {
+      setIsVerifyingOtp(true)
+      const { data, error } = await supabase.auth.verifyOtp({
+        email: verificationEmail,
+        token: otp,
+        type: 'email',
+      })
+
+      if (error) throw error
+
+      const user = data?.user
+      if (!user) {
+        throw new Error('Email verified, but login session was not created. Please try password login again.')
+      }
+
+      await finalizeSessionFromProfile(user, { email: verificationEmail })
+
+      setShowEmailOtpStep(false)
+      setVerificationOtp('')
+      setPassword('')
+      setLoginIdentifier('')
+      setAuthStatus('Email verified and login successful. Redirecting to dashboard...')
+      refreshCaptcha()
+      navigate('/dashboard')
+    } catch (error) {
+      setAuthError(error?.message || 'OTP verification failed. Please try again.')
+    } finally {
+      if (mountedRef.current) {
+        setIsVerifyingOtp(false)
+      }
+    }
+  }
+
   const handleLogin = async () => {
     setAuthStatus('')
     setAuthError('')
@@ -344,12 +425,25 @@ export default function Auth() {
       await finalizeSessionFromProfile(user, { email })
 
       setAuthStatus('Login successful. Redirecting to dashboard...')
+      setShowEmailOtpStep(false)
+      setVerificationEmail('')
+      setVerificationOtp('')
       setPassword('')
       setLoginIdentifier('')
       refreshCaptcha()
       navigate('/dashboard')
     } catch (error) {
-      setAuthError(error?.message || 'Login failed. Please check your credentials and try again.')
+      const rawMessage = String(error?.message || '')
+      if (/email not confirmed|email_not_confirmed/i.test(rawMessage)) {
+        const emailForOtp = await resolveLoginEmailAddress(identifier).catch(() => '')
+        if (emailForOtp) {
+          await sendEmailVerificationOtp(emailForOtp)
+        } else {
+          setAuthError('Email not confirmed. Please login with email format to receive verification OTP.')
+        }
+      } else {
+        setAuthError(error?.message || 'Login failed. Please check your credentials and try again.')
+      }
       refreshCaptcha()
     } finally {
       if (mountedRef.current) {
@@ -507,6 +601,41 @@ export default function Auth() {
 
             {authStatus && <p className="auth-status">{authStatus}</p>}
             {authError && <p className="auth-status auth-status-error">{authError}</p>}
+
+            {mode === 'login' && showEmailOtpStep && (
+              <div className="captcha-block" style={{ marginTop: '0.25rem' }}>
+                <div className="captcha-header">
+                  <strong>Email OTP verification</strong>
+                  <button
+                    type="button"
+                    className="captcha-refresh"
+                    onClick={() => sendEmailVerificationOtp(verificationEmail)}
+                    aria-label="Resend OTP"
+                    disabled={isSendingOtp}
+                  >
+                    {isSendingOtp ? '...' : '↻'}
+                  </button>
+                </div>
+                <p>Enter the OTP sent to {verificationEmail}.</p>
+                <input
+                  className="form-input captcha-input"
+                  placeholder="Enter 7 to 8 digit OTP"
+                  value={verificationOtp}
+                  onChange={(e) => setVerificationOtp(e.target.value.replace(/\D/g, '').slice(0, 8))}
+                  inputMode="numeric"
+                  maxLength={8}
+                />
+                <button
+                  className="primary-button auth-submit"
+                  type="button"
+                  onClick={verifyEmailOtpAndContinueLogin}
+                  disabled={isVerifyingOtp}
+                  style={{ marginTop: '0.75rem' }}
+                >
+                  {isVerifyingOtp ? 'Verifying...' : 'Verify OTP & Continue'}
+                </button>
+              </div>
+            )}
 
             <button
               className="primary-button auth-submit"

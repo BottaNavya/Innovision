@@ -1,6 +1,12 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+<<<<<<< HEAD
+  "installCommand": "cd lokguard_ai && npm install",
+  "buildCommand": "cd lokguard_ai && npm run build",
+  "outputDirectory": "lokguard_ai/dist",
+=======
   "framework": "vite",
+>>>>>>> 30a3e09 (supabase)
   "rewrites": [
     {
       "source": "/(.*)",

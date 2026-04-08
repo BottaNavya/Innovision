@@ -1,0 +1,43 @@
+query UserClaims($userId: UUID!) @auth(level: USER, insecureReason: "Retrieving claims for a specific user requires authentication.") {
+  claims(where: {userId: {eq: $userId}}) {
+    id
+    disruptionType
+    incidentDate
+    requestedAmount
+    status
+    createdAt
+    subscriptionType {
+      name
+    }
+  }
+}
+
+query ActivePolicies @auth(level: PUBLIC, insecureReason: "Listing active policies is safe to expose to the public.") {
+  policies(where: {isActive: {eq: true}}) {
+    id
+    name
+    description
+    coverageAmount
+    premiumAmount
+  }
+}
+
+mutation CreateDisruptionEvent($type: String!, $severity: String!, $location: String!, $eventDate: Timestamp!) @auth(level: USER, insecureReason: "Creating a disruption event requires user authentication.") {
+  disruptionEvent_insert(data: {
+    type: $type,
+    severity: $severity,
+    location: $location,
+    eventDate: $eventDate,
+    createdAt_expr: "request.time"
+  }) {
+    id
+  }
+}
+
+mutation UpdateClaimStatus($claimId: UUID!, $newStatus: String!) @auth(level: USER, insecureReason: "Updating a claim's status requires user authentication.") {
+  claim_update(key: {id: $claimId}, data: {
+    status: $newStatus
+  }) {
+    id
+  }
+}

@@ -1,0 +1,74 @@
+import { Link, NavLink, useNavigate } from 'react-router-dom'
+import { supabase } from '../supabaseClient'
+import { useTheme } from '../hooks/useTheme'
+
+const links = [
+  { to: '/home', label: 'Home' },
+  { to: '/dashboard', label: 'Dashboard' },
+  { to: '/claims', label: 'Claims' },
+  { to: '/alerts', label: 'Alerts' },
+  { to: '/policy', label: 'Policy' },
+  { to: '/profile', label: 'Profile' },
+]
+
+export default function Navbar({ isAuthenticated }) {
+  const navigate = useNavigate()
+  const { isDark, toggleTheme } = useTheme()
+
+  const handleLogout = async () => {
+    try {
+      await supabase.auth.signOut()
+    } catch {
+      // Even if remote signOut fails, clear local session to prevent stale auth UI.
+    }
+
+    localStorage.removeItem('isLoggedIn')
+    localStorage.removeItem('userSession')
+    localStorage.removeItem('user')
+    window.dispatchEvent(new Event('lokguard-auth-changed'))
+    navigate('/auth')
+  }
+
+  return (
+    <nav className="app-navbar">
+      <Link to="/home" className="nav-brand">
+        <span className="nav-brand-mark">🛡️</span>
+        <span>
+          <strong>TinyBheema</strong>
+          <small>by LokGuard</small>
+        </span>
+      </Link>
+
+      <div className="nav-links">
+        {links.map((link) => (
+          <NavLink
+            key={link.to}
+            to={link.to}
+            className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}
+          >
+            {link.label}
+          </NavLink>
+        ))}
+      </div>
+
+      <button
+        type="button"
+        className="nav-theme-toggle"
+        onClick={toggleTheme}
+        title="Toggle dark mode"
+      >
+        {isDark ? '☀️' : '🌙'}
+      </button>
+
+      {isAuthenticated ? (
+        <button type="button" className="nav-action nav-action-button" onClick={handleLogout}>
+          Logout
+        </button>
+      ) : (
+        <Link to="/auth" className="nav-action">
+          Login
+        </Link>
+      )}
+    </nav>
+  )
+}
